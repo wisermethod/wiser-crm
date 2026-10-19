@@ -1,0 +1,169 @@
+import { useEffect, useState } from "react";
+import { Building2, Handshake, PanelLeft, Users } from "lucide-react";
+import { AppNav, reportLocation, useHostChanges, useHostNavigate, type AppNavItem } from "@clawnify/app/client";
+import { useCrmState } from "./hooks/use-crm";
+import { CrmContext } from "./context";
+import { useRouter, withQuery, type Route } from "./hooks/use-router";
+import { ErrorBanner } from "./components/error-banner";
+import { ComposerProvider } from "./components/email/composer";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { ContactsPage } from "./components/contacts/contacts-page";
+import { ContactDetail } from "./components/contacts/contact-detail";
+import { CompaniesPage } from "./components/companies/companies-page";
+import { CompanyDetail } from "./components/companies/company-detail";
+import { DealsBoard } from "./components/deals/deals-board";
+import { DealsProgressPage } from "./components/deals/deals-progress-page";
+import { DealDetail } from "./components/deals/deal-detail";
+import { PropertiesPage } from "./components/properties/properties-page";
+import { EmailSyncPage } from "./components/email-sync/email-sync-page";
+import { CustomersPage } from "./components/customers/customers-page";
+import { MeetingsSettingsPage } from "./components/meetings/meetings-settings-page";
+import { RecordPanel, RecordPanelHeader } from "./components/record-page";
+
+// One definition of the navigation. <AppNav> paints it as this app's own
+// sidebar when opened directly, and hands it to the Clawnify dashboard's
+// sidebar when embedded there. Record types own a colour: the tile behind
+// the icon is the type's hue, and the same hue follows the type onto its
+// page header and its chips inside other records.
+const RECORDS: AppNavItem[] = [
+  // The CRM opens on contacts. This hidden item is what the app's name opens
+  // (the brand row standalone, the app's row in the dashboard).
+  { id: "home", label: "Contacts", href: "/", home: true },
+  { id: "contacts", label: "Contacts", href: "/contacts", icon: "users", color: "blue" },
+  { id: "companies", label: "Companies", href: "/companies", icon: "building-2", color: "violet" },
+  { id: "deals", label: "Deals", href: "/deals", icon: "dollar-sign", color: "green" },
+  { id: "customers", label: "Customers", href: "/customers", icon: "activity", color: "orange" },
+];
+const SETTINGS: AppNavItem[] = [
+  { id: "properties", label: "Attributes", href: "/settings/properties", icon: "layers" },
+  { id: "email-sync", label: "Email", href: "/settings/email", icon: "mail" },
+  { id: "meetings-sync", label: "Meetings", href: "/settings/meetings", icon: "calendar" },
+];
+
+function activeFor(route: Route): string {
+  if (route.name === "contact") return "contacts";
+  if (route.name === "company") return "companies";
+  if (route.name === "deal") return "deals";
+  return route.name;
+}
+
+export function App() {
+  const isAgent = document.documentElement.hasAttribute("data-agent");
+  const state = useCrmState(isAgent);
+  const { path, route, navigate } = useRouter();
+  // A list opens its records in a side panel; the record's own path is the full page.
+  const openRecord = route.name === "contacts" || route.name === "companies" || route.name === "deals" ? route.record : undefined;
+
+  // Lets the dashboard restore this exact screen on reload.
+  useEffect(() => {
+    reportLocation(path);
+  }, [path]);
+
+  // The Clawnify dashboard's chat drives this app too: it opens a page
+  // through our router (no reload), and after it writes records through the
+  // API, the lists and any open record re-read, the same as after our own edits.
+  useHostNavigate((to) => navigate(to));
+  useHostChanges(() => {
+    void state.recordsChanged();
+  });
+
+  // Collapse folds the SDK sidebar to icons. The toggle lives here, not in
+  // <AppNav>, because the SDK has no slot for it; the proper home is the SDK.
+  const [navCollapsed, setNavCollapsed] = useState(false);
+
+  const counts: Record<string, number> = { contacts: state.stats.contacts, companies: state.stats.companies, deals: state.stats.deals, customers: state.stats.customers };
+  const groups = [
+    { items: RECORDS.map((n) => (counts[n.id] ? { ...n, count: counts[n.id] } : n)) },
+    { label: "Settings", items: SETTINGS },
+  ];
+
+  return (
+    <CrmContext.Provider value={state}>
+    <TooltipProvider delayDuration={200}>
+    <ComposerProvider>
+      <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-background text-foreground md:flex-row" data-nav-collapsed={navCollapsed || undefined}>
+        {/* flex, so the SDK aside stretches to the row height like a direct child */}
+        <div className="relative flex shrink-0">
+          <button
+            type="button"
+            onClick={() => setNavCollapsed((v) => !v)}
+            aria-label={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="absolute right-2 top-3.5 z-10 hidden size-7 items-center justify-center rounded-[0.5rem] text-muted-foreground hover:bg-border/60 hover:text-foreground md:inline-flex"
+          >
+            <PanelLeft className="size-4" />
+          </button>
+          <AppNav
+            title="OpenCRM"
+            icon="contact"
+            groups={groups}
+            active={activeFor(route)}
+            onNavigate={(item) => navigate(item.href ?? "/")}
+          />
+        </div>
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {state.loading ? (
+            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">Loading…</div>
+          ) : (
+            <>
+              {route.name === "contacts" && (
+                <div className="flex min-h-0 flex-1">
+                  <ContactsPage navigate={navigate} openId={openRecord} viewParam={route.view} filtersParam={route.filters} />
+                  {openRecord && (
+                    <RecordPanel label="Contact">
+                      <RecordPanelHeader icon={Users} label="Contact" onExpand={() => navigate(`/contacts/${encodeURIComponent(openRecord)}`)} onClose={() => navigate(withQuery({ record: null }))} />
+                      <ContactDetail key={openRecord} id={openRecord} navigate={navigate} panel />
+                    </RecordPanel>
+                  )}
+                </div>
+              )}
+              {route.name === "contact" && <ContactDetail id={route.id} navigate={navigate} />}
+              {route.name === "companies" && (
+                <div className="flex min-h-0 flex-1">
+                  <CompaniesPage navigate={navigate} openId={openRecord} viewParam={route.view} filtersParam={route.filters} />
+                  {openRecord && (
+                    <RecordPanel label="Company">
+                      <RecordPanelHeader icon={Building2} label="Company" onExpand={() => navigate(`/companies/${encodeURIComponent(openRecord)}`)} onClose={() => navigate(withQuery({ record: null }))} />
+                      <CompanyDetail key={openRecord} id={openRecord} navigate={navigate} panel />
+                    </RecordPanel>
+                  )}
+                </div>
+              )}
+              {route.name === "company" && <CompanyDetail id={route.id} navigate={navigate} />}
+              {route.name === "deals" && (
+                <div className="flex min-h-0 flex-1">
+                  {route.view === "next-steps"
+                    ? <DealsProgressPage navigate={navigate} openId={openRecord} />
+                    : <DealsBoard navigate={navigate} openId={openRecord} />}
+                  {openRecord && (
+                    <RecordPanel label="Deal">
+                      <RecordPanelHeader icon={Handshake} label="Deal" onExpand={() => navigate(`/deals/${encodeURIComponent(openRecord)}`)} onClose={() => navigate(withQuery({ record: null }))} />
+                      <DealDetail key={openRecord} id={openRecord} navigate={navigate} panel />
+                    </RecordPanel>
+                  )}
+                </div>
+              )}
+              {route.name === "deal" && <DealDetail id={route.id} navigate={navigate} />}
+              {route.name === "customers" && <CustomersPage navigate={navigate} />}
+              {route.name === "properties" && <PropertiesPage />}
+              {route.name === "email-sync" && <EmailSyncPage />}
+              {route.name === "meetings-sync" && <MeetingsSettingsPage />}
+              {route.name === "not-found" && (
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 p-12 text-center">
+                  <h1 className="text-xl font-bold tracking-tight">Not found</h1>
+                  <p className="text-sm text-muted-foreground">That page doesn't exist.</p>
+                  <button className="text-sm text-[var(--ring)] hover:underline" onClick={() => navigate("/contacts")}>
+                    Back to contacts
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </main>
+        <ErrorBanner />
+      </div>
+    </ComposerProvider>
+    </TooltipProvider>
+    </CrmContext.Provider>
+  );
+}
