@@ -58,7 +58,7 @@ export function ContactEmails({ contactId, contactName, onCompose, canCompose, n
         <h2 className="inline-flex items-center gap-2 text-sm font-medium">
           Emails <span className="rounded-xs bg-secondary px-1.5 text-xs tabular text-muted-foreground">{data?.total ?? 0}</span>
         </h2>
-        <Button variant="ghost" size="icon" aria-label="Compose email" title={canCompose ? "Compose email" : "Connect Gmail in Clawnify"} disabled={!canCompose} onClick={onCompose}>
+        <Button variant="ghost" size="icon" aria-label="Compose email" title={canCompose ? "Compose email" : "Email isn't available in Wiser CRM"} disabled={!canCompose} onClick={onCompose}>
           <Plus className="size-4" />
         </Button>
       </div>

@@ -36,8 +36,6 @@ const RECORDS: AppNavItem[] = [
 ];
 const SETTINGS: AppNavItem[] = [
   { id: "properties", label: "Attributes", href: "/settings/properties", icon: "layers" },
-  { id: "email-sync", label: "Email", href: "/settings/email", icon: "mail" },
-  { id: "meetings-sync", label: "Meetings", href: "/settings/meetings", icon: "calendar" },
 ];
 
 function activeFor(route: Route): string {
@@ -94,7 +92,7 @@ export function App() {
             <PanelLeft className="size-4" />
           </button>
           <AppNav
-            title="OpenCRM"
+            title="Wiser CRM"
             icon="contact"
             groups={groups}
             active={activeFor(route)}

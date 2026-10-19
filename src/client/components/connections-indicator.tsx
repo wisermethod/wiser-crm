@@ -30,7 +30,7 @@ export function ConnectionsIndicator() {
                 <Icon className="size-3.5" />
               </span>
             </TooltipTrigger>
-            <TooltipContent>{on ? `${label} connected` : `${label} not connected — connect it in Clawnify`}</TooltipContent>
+            <TooltipContent>{on ? `${label} connected` : `${label} not connected`}</TooltipContent>
           </Tooltip>
         );
       })}
