@@ -3472,7 +3472,7 @@ app.post("/api/contacts/import", async (c) => {
         if (!existing.phone) existing.phone = r.company_phone;
       }
     }
-    const companyIds = new Map<string, number>(); // lowercased name → id
+    const companyIds = new Map<string, string>(); // lowercased name → id
 
     const loadIds = async (names: string[]) => {
       for (const group of chunk(names, LOOKUP_CHUNK)) {

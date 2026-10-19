@@ -1,0 +1,9 @@
+{
+  "name": "wiser-app-runtime-services",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "peerDependencies": {}
+}
