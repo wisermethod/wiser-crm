@@ -67,10 +67,7 @@ export function ContactEmails({ contactId, contactName, onCompose, canCompose, n
         data.sync_on ? (
           <p className="text-sm text-faint">No emails with {contactName} yet.</p>
         ) : (
-          <p className="text-sm text-faint">
-            Turn on email sync to see emails with {contactName} here.{" "}
-            <button type="button" className="text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => navigate("/settings/email")}>Settings → Email</button>
-          </p>
+          <p className="text-sm text-faint">Emails aren't available in Wiser CRM.</p>
         )
       ) : (
         <ul className="flex flex-col rounded-md bg-card shadow-edge">
