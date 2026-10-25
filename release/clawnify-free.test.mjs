@@ -22,7 +22,7 @@ snapshots:
 `;
 function fixture(t) {
   // Real path: the checker compares real paths, and macOS's default temp directory is a link.
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wiser-release-fixture-')));
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(process.env.WISER_RELEASE_TEST_TMPDIR ?? os.tmpdir(), 'wiser-release-fixture-')));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const repo = path.join(base, 'fork');
   fs.mkdirSync(repo);
@@ -44,7 +44,7 @@ function fixture(t) {
   const root = { name: 'pnpm:root', added: { name: '@clawnify/app', linkedFrom: path.join(repo, 'runtime/app') } };
   const events = [event, root, { name: 'pnpm:fetching-progress', packageId: 'fixture-dep@1.2.3' }];
   const worker = { inputs: { 'src/main.js': {}, 'node_modules/.pnpm/fixture-dep@1.2.3/node_modules/fixture-dep/index.js': {} } };
-  const uiRecord = { root: repo, chunks: [{ fileName: 'app.js', modules: [path.join(repo, 'runtime/app/index.js'), '\0commonjsHelpers.js', 'vite/preload-helper.js'] }] };
+  const uiRecord = { root: repo, assets: [], publicFiles: [], chunks: [{ fileName: 'app.js', modules: [path.join(repo, 'runtime/app/index.js'), '\0commonjsHelpers.js', 'vite/preload-helper.js'] }] };
   function run(command, expected, reason) {
     fs.writeFileSync(log, events.map(e => JSON.stringify(e)).join('\n') + '\n');
     fs.writeFileSync(meta, JSON.stringify(worker));
@@ -160,4 +160,99 @@ test('CLI refuses to open a package directory input', t => {
   const f = fixture(t);
   const r = spawnSync(process.execPath, [checker, 'install-log', f.repo, path.join(f.repo, 'node_modules/.pnpm/fixture-dep@1.2.3/node_modules/fixture-dep/index.js')], { encoding: 'utf8' });
   assert.equal(r.status, 2); assert.match(r.stdout, /refusing to open protected input/);
+});
+
+// S10b controls contain only synthetic files, never a published scope package.
+test('S10b finding 1: every accepted runtime target is walked, including missing links', async t => {
+  for (const command of ['lockfile', 'install-log', 'bundle-inputs']) {
+    for (const kind of ['escape', 'dangling']) await t.test(`${command}: nested ${kind}`, t => {
+      const f = fixture(t), outside = path.join(f.base, 'outside');
+      if (kind === 'escape') fs.mkdirSync(outside);
+      fs.symlinkSync(outside, path.join(f.repo, 'runtime/app/extra'));
+      f.run(command, 1, /runtime.*(?:outside|missing|ENOENT|dangling)/i);
+    });
+    await t.test(`${command}: dangling root`, t => {
+      const f = fixture(t);
+      if (command === 'lockfile') f.write('pnpm-lock.yaml', cleanLock.replaceAll('runtime/app', 'runtime/missing'));
+      else if (command === 'install-log') { f.events.splice(0, f.events.length, { name: 'pnpm:root', added: { name: '@clawnify/app', linkedFrom: path.join(f.repo, 'runtime/missing') } }); }
+      else { fs.symlinkSync(path.join(f.repo, 'runtime/missing'), path.join(f.repo, 'runtime/app/missing')); }
+      f.run(command, 1, /runtime.*(?:missing|ENOENT|dangling)/i);
+    });
+  }
+});
+
+test('S10b finding 2: lockfile syntax fails closed', async t => {
+  const cases = [
+    ['first document key', s => `unrelated: true\n${s}`, /first.*lockfileVersion/],
+    ['escaped scope key', s => s.replace('packages:\n', 'packages:\n  "\\u0040clawnify/integrations@0.4.0": {}\n'), /backslash/],
+    ['split quoted name', s => s + '  "fixture\\\n    continuation": {}\n', /backslash/],
+    ['literal block', s => s + '  metadata: |\n    hidden\n', /block.scalar/],
+    ['folded block', s => s + '  metadata: >-\n    hidden\n', /block.scalar/],
+    ['duplicate version', s => s.replace('        version: link:runtime/app', '        version: link:runtime/app\n        version: 0.4.0'), /duplicate key.*version/],
+    ['duplicate quoted key', s => s.replace('settings:', 'settings:').replace('importers:', 'settings:\n  flag: true\n  "flag": false\nimporters:'), /duplicate key.*flag/],
+    ['unread line', s => s + '  unexplained syntax\n', /unrecognized.*line/],
+    ['second document', s => s + '---\n', /unrecognized.*line/],
+  ];
+  for (const [name, change, reason] of cases) await t.test(name, t => {
+    const f = fixture(t); f.write('pnpm-lock.yaml', change(cleanLock)); f.run('lockfile', 2, reason);
+  });
+});
+
+test('S10b finding 3: NUL paths receive scope, ownership and pin checks', async t => {
+  for (const kind of ['alias', 'outside', 'unlisted', 'unknown-helper']) await t.test(kind, t => {
+    const f = fixture(t);
+    let id;
+    if (kind === 'alias') id = f.write('node_modules/integrations/index.js');
+    if (kind === 'outside') { id = path.join(f.base, 'external.js'); fs.writeFileSync(id, ''); }
+    if (kind === 'unlisted') id = f.write('node_modules/.pnpm/unlisted@1.0.0/node_modules/unlisted/index.js');
+    if (kind === 'unknown-helper') id = 'unrecognizedHelper.js';
+    f.ui.chunks[0].modules = [`\0${id}?commonjs-module`];
+    f.run('bundle-inputs', 1, /not a locked|outside fork|not listed|cannot be resolved/);
+  });
+});
+
+test('S10b finding 4: Wrangler virtual basenames must be absent in the exact pin directory', async t => {
+  for (const kind of ['lookalike-missing', 'lookalike-file', 'pinned-file', 'pinned-dangling']) await t.test(kind, t => {
+    const f = fixture(t);
+    f.write('pnpm-lock.yaml', cleanLock.replace('packages:\n', "packages:\n  'wrangler@4.0.0': {}\n"));
+    const dir = kind.startsWith('lookalike') ? 'wrangler@4.0.0_extra' : 'wrangler@4.0.0';
+    const id = `node_modules/.pnpm/${dir}/node_modules/wrangler/_virtual_unenv_global_polyfill-@cloudflare-unenv-preset-node-console`;
+    fs.mkdirSync(path.dirname(path.join(f.repo, id)), { recursive: true });
+    if (kind.endsWith('file')) f.write(id);
+    if (kind.endsWith('dangling')) fs.symlinkSync(path.join(f.base, 'absent'), path.join(f.repo, id));
+    f.worker.inputs[id] = {};
+    f.run('bundle-inputs', 1, /Wrangler virtual|cannot be resolved/);
+  });
+});
+
+test('S10b finding 5: recorder surfaces public files and imported asset origins to C', async t => {
+  for (const kind of ['public', 'asset']) await t.test(kind, t => {
+    const f = fixture(t);
+    const releaseDir = path.dirname(checker), sourceRepo = path.dirname(releaseDir);
+    // Use only the installed, unrestricted Vite dependency. No install or package scan.
+    fs.symlinkSync(path.join(sourceRepo, 'node_modules/vite'), path.join(f.repo, 'node_modules/vite'));
+    f.write('release/ui-inputs.mjs', fs.readFileSync(path.join(releaseDir, 'ui-inputs.mjs')));
+    f.write('package.json', '{"type":"module"}\n');
+    f.write('vite.config.ts', 'export default { publicDir: "public", build: { outDir: "dist", assetsInlineLimit: 0 } };\n');
+    f.write('index.html', '<script type="module" src="/src/main.js"></script>\n');
+    if (kind === 'public') f.write('public/@clawnify/integrations.js', '// synthetic public control\n');
+    else {
+      f.write('stand-in/@clawnify/integrations/picture.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>\n');
+      f.write('src/main.js', 'import picture from "../stand-in/@clawnify/integrations/picture.svg"; console.log(picture);\n');
+    }
+    const recordPath = path.join(f.base, 'recorded-ui.json');
+    const build = spawnSync(process.execPath, [path.join(f.repo, 'release/ui-inputs.mjs'), recordPath], { cwd: f.repo, encoding: 'utf8' });
+    assert.equal(build.status, 0, build.stdout + build.stderr);
+    Object.assign(f.ui, JSON.parse(fs.readFileSync(recordPath, 'utf8')));
+    // Remove module evidence: this control must fail from the asset/public record alone.
+    f.ui.chunks[0].modules = [path.join(f.repo, 'src/main.js')];
+    f.run('bundle-inputs', 1, /(?:public|asset).*@clawnify.*scope input outside runtime/);
+  });
+});
+
+test('S10b finding 6: README states the checks measured coverage and limits', () => {
+  const readme = fs.readFileSync(new URL('./README.md', import.meta.url), 'utf8');
+  assert.match(readme, /each check covers (?:only )?the strings and paths it resolves/i);
+  assert.match(readme, /runtime link is trusted only after its tree is walked/i);
+  assert.match(readme, /contents, copied code and other builders. records are outside/i);
 });
