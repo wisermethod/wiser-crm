@@ -49,7 +49,8 @@ test('adoption keeps every seeded row and custom value; repeated adoption and ap
   const local = await database('adoption');
   const before = await local.use(async (db) => { await execute(db, await baseline()); await seed(db); return snapshot(db); });
   assert.equal(Object.keys(before).length, 20);
-  for (const [name, { rows }] of Object.entries(before)) assert.equal(rows.length, 1, `Seed row missing in ${name}`);
+  for (const [name, { rows }] of Object.entries(before)) assert.equal(rows.length, name === 'contacts' ? 2 : 1, `Seed row missing in ${name}`);
+  assert.equal(new Set(before.contacts.rows.map(({ cf_test }) => cf_test)).size, 2, 'Custom values must differ across rows');
   const adopted = local.adopt();
   assert.equal(adopted.status, 0, adopted.output);
   assert.match(adopted.output, /without running it/);
@@ -60,15 +61,18 @@ test('adoption keeps every seeded row and custom value; repeated adoption and ap
   assert.equal(record[0].id, 1);
   assert.ok(record[0].applied_at);
   // Existing installs first adopt the frozen baseline, then receive later files.
-  // With this brief's baseline-only chain apply must do nothing.
-  if (migrations.length === 1) assert.match(local.apply(), /No migrations to apply/);
-  preserves(before, await local.use(snapshot));
-  assert.deepEqual(await local.use(snapshot), before);
+  const applied = local.apply();
+  if (migrations.length === 1) assert.match(applied, /No migrations to apply/);
+  const after = await local.use(snapshot);
+  preserves(before, after);
+  if (migrations.length === 1) assert.deepEqual(after, before);
+  const appliedRecords = await local.use(records);
+  assert.deepEqual(appliedRecords.map(({ name }) => name), migrations);
   const repeated = local.adopt();
   assert.equal(repeated.status, 0, repeated.output);
-  assert.match(repeated.output, /already exists; nothing changed/);
-  assert.deepEqual(await local.use(records), record);
-  assert.deepEqual(await local.use(snapshot), before);
+  assert.match(repeated.output, /already records the baseline and the schema matches; nothing changed/);
+  assert.deepEqual(await local.use(records), appliedRecords);
+  assert.deepEqual(await local.use(snapshot), after);
 });
 
 // Miniflare may lazily create its own _cf_METADATA on the first D1 read.
@@ -112,6 +116,19 @@ test('adoption refuses remote or missing-local arguments before accessing a data
 
 test('every post-baseline migration keeps every record and every custom column', async (t) => {
   t.diagnostic(`${migrationFiles.length - 1} post-baseline migration(s) checked; fixture controls exercise the same preservation checker.`);
+  if (migrationFiles.length === 1) {
+    const fixtures = ['0002_add_column.sql', '0002_drop_custom_column.sql', '0002_restore_custom_default.sql']
+      .map(name => join(root, 'tests/fixtures/migrations', name));
+    for (const file of fixtures) {
+      const sql = await readFile(file, 'utf8').catch(() => '');
+      assert.ok(sql.trim(), `No post-baseline migrations; required preservation fixtures missing or empty: ${file}`);
+    }
+    await t.test('baseline-only chain: additive fixture passes', () => preservationCase([migrationFiles[0]], fixtures[0]));
+    await t.test('baseline-only chain: missing custom column fails', () => assert.rejects(
+      () => preservationCase([migrationFiles[0]], fixtures[1]), /Migration lost column contacts\.cf_test/));
+    await t.test('baseline-only chain: restored custom defaults fail', () => assert.rejects(
+      () => preservationCase([migrationFiles[0]], fixtures[2]), /Migration changed records in contacts/));
+  }
   for (let index = 1; index < migrationFiles.length; index++) {
     await t.test(migrations[index], () => preservationCase(migrationFiles.slice(0, index), migrationFiles[index]));
   }

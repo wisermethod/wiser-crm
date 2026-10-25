@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { parseArgs } from 'node:util';
+import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const baselineName = '0001_baseline.sql';
@@ -45,8 +45,14 @@ export async function adoptLocal({ configPath, databaseName, persistTo }) {
     const target = await open({ path: join(resolve(persistTo), 'v3') });
     const tables = (await target.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).results;
     const haveTables = new Set(tables.map(({ name }) => name));
-    if (haveTables.has(migrationTable)) {
-      return `${migrationTable} already exists; nothing changed.`;
+    const hasHistory = haveTables.has(migrationTable);
+    if (hasHistory) {
+      const names = (await target.prepare(`SELECT name FROM ${migrationTable} ORDER BY id`).all()).results.map(({ name }) => name);
+      const files = (await readdir(new URL('.', import.meta.url))).filter(name => name.endsWith('.sql')).sort();
+      if (!names.length) throw new Error(`Refusing ${migrationTable} history: empty. Nothing changed.`);
+      if (files[0] !== baselineName || names.length > files.length || names.some((name, index) => name !== files[index])) {
+        throw new Error(`Refusing ${migrationTable} history: names must be an ordered prefix of the migration files (${names.join(', ')}). Nothing changed.`);
+      }
     }
 
     // Use SQLite's own interpretation of the frozen baseline, not a SQL parser.
@@ -56,24 +62,51 @@ export async function adoptLocal({ configPath, databaseName, persistTo }) {
     const requiredTables = (await reference.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name",
     ).all()).results.map(({ name }) => name);
-    if (!requiredTables.some((name) => haveTables.has(name))) {
+    if (!hasHistory && !requiredTables.some((name) => haveTables.has(name))) {
       return 'No baseline tables found; nothing changed. Run wrangler d1 migrations apply.';
     }
 
-    const missing = [];
+    const mismatches = [];
+    const rows = async (db, pragma, name) => (await db.prepare(`PRAGMA ${pragma}(${quote(name)})`).all()).results;
     for (const table of requiredTables) {
       if (!haveTables.has(table)) {
-        missing.push(`table ${table}`);
+        mismatches.push(`missing table ${table}`);
         continue;
       }
       const required = (await reference.prepare(`PRAGMA table_info(${quote(table)})`).all()).results;
       const actual = (await target.prepare(`PRAGMA table_info(${quote(table)})`).all()).results;
-      const columns = new Set(actual.map(({ name }) => name));
-      for (const { name } of required) {
-        if (!columns.has(name)) missing.push(`column ${table}.${name}`);
+      for (const column of required) {
+        const found = actual.find(({ name }) => name === column.name);
+        if (!found) {
+          mismatches.push(`missing column ${table}.${column.name}`);
+          continue;
+        }
+        for (const property of ['type', 'notnull', 'dflt_value', 'pk']) {
+          if (found[property] !== column[property]) mismatches.push(`column ${table}.${column.name} ${property} differs`);
+        }
+      }
+      const actualIndexes = await rows(target, 'index_list', table);
+      for (const index of await rows(reference, 'index_list', table)) {
+        const found = actualIndexes.find(({ name }) => name === index.name);
+        if (!found) {
+          mismatches.push(`missing index ${table}.${index.name}`);
+          continue;
+        }
+        for (const property of ['unique', 'partial']) {
+          if (found[property] !== index[property]) mismatches.push(`index ${table}.${index.name} ${property} differs`);
+        }
+        // cids depend on table column order; only index column order matters.
+        const columns = async db => (await rows(db, 'index_info', index.name)).sort((a, b) => a.seqno - b.seqno).map(({ name }) => name);
+        if (!isDeepStrictEqual(await columns(target), await columns(reference))) {
+          mismatches.push(`index columns differ: ${table}.${index.name}`);
+        }
+      }
+      if (!isDeepStrictEqual(await rows(target, 'foreign_key_list', table), await rows(reference, 'foreign_key_list', table))) {
+        mismatches.push(`foreign keys differ: ${table}`);
       }
     }
-    if (missing.length) throw new Error(`Refusing incomplete baseline; missing ${missing.join(', ')}. Nothing changed.`);
+    if (mismatches.length) throw new Error(`Refusing incompatible baseline; ${mismatches.join(', ')}. Nothing changed.`);
+    if (hasHistory) return `${migrationTable} already records the baseline and the schema matches; nothing changed.`;
 
     // The same DDL and INSERT used by Wrangler 4.93.1, in one atomic D1 batch.
     await target.batch([

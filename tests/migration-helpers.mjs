@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const scratchRoot = '/private/tmp/wiser-crm-m2a';
+export const scratchRoot = '/private/tmp/wiser-crm-m2c';
 await mkdir(scratchRoot, { recursive: true });
 Object.assign(process.env, {
   WRANGLER_SEND_METRICS: 'false', WRANGLER_HIDE_BANNER: 'true',
@@ -62,13 +62,22 @@ export async function tableNames(db) {
 
 export async function shape(db) {
   const tables = {};
+  const foreignKeys = {};
+  const indexes = [];
   for (const name of await tableNames(db)) {
     tables[name] = (await db.prepare(`PRAGMA table_info(${quote(name)})`).all()).results
       .map(({ name, type, notnull, dflt_value, pk }) => ({ name, type, notnull, dflt_value, pk }))
       .sort((a, b) => a.name.localeCompare(b.name));
+    foreignKeys[name] = (await db.prepare(`PRAGMA foreign_key_list(${quote(name)})`).all()).results;
+    for (const index of (await db.prepare(`PRAGMA index_list(${quote(name)})`).all()).results) {
+      const columns = (await db.prepare(`PRAGMA index_info(${quote(index.name)})`).all()).results
+        .sort((a, b) => a.seqno - b.seqno).map(({ name }) => name);
+      const { sql } = await db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").bind(index.name).first();
+      indexes.push({ name: index.name, table: name, unique: index.unique, partial: index.partial, columns, sql });
+    }
   }
-  const indexes = (await db.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name != 'd1_migrations' AND tbl_name NOT LIKE '_cf_%' ORDER BY name").all()).results;
-  return { tables, indexes };
+  indexes.sort((a, b) => a.name.localeCompare(b.name));
+  return { tables, foreignKeys, indexes };
 }
 
 export function sameShape(actual, expected) {
@@ -82,9 +91,18 @@ export function sameShape(actual, expected) {
     for (const column of actual.tables[table]) {
       assert.ok(columns.some(({ name }) => name === column.name), `Unexpected column ${table}.${column.name}`);
     }
+    assert.deepEqual(actual.foreignKeys[table], expected.foreignKeys[table], `Foreign keys differ: ${table}`);
   }
   assert.deepEqual(Object.keys(actual.tables), Object.keys(expected.tables), 'Table names differ');
-  assert.deepEqual(actual.indexes, expected.indexes, 'Indexes differ (sqlite_master)');
+  for (const index of expected.indexes) {
+    const found = actual.indexes.find(({ name }) => name === index.name);
+    assert.ok(found, `Missing index ${index.table}.${index.name}`);
+    assert.deepEqual(found.columns, index.columns, `Index columns differ: ${index.table}.${index.name}`);
+    for (const property of ['table', 'unique', 'partial', 'sql']) {
+      assert.equal(found[property], index[property], `Index ${property} differs: ${index.table}.${index.name}`);
+    }
+  }
+  assert.deepEqual(actual.indexes.map(({ name }) => name), expected.indexes.map(({ name }) => name), 'Index names differ');
 }
 
 /** Include every field and FK, with one related row in every table. */
@@ -115,6 +133,9 @@ export async function seed(db) {
       inserted.add(table);
     }
   }
+  const secondContact = { ...values.get('contacts'), id: 'seed:contacts:second-id', cf_test: 'second custom value survives' };
+  await db.prepare(`INSERT INTO contacts (${Object.keys(secondContact).map(quote)}) VALUES (${Object.keys(secondContact).map(() => '?')})`)
+    .bind(...Object.values(secondContact)).run();
 }
 
 export async function snapshot(db) {

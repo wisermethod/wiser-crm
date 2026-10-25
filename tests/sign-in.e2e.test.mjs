@@ -14,10 +14,12 @@ test('pass-list sign-in cases through the real local Worker', { timeout: 120_000
     t.diagnostic(`${method} ${path}: ${response.status}`);
     return response.data;
   }
-  await t.test('case 1: GET contacts without a token is 401', async () => {
-    const result = await refused('GET', '/api/contacts', 401, { token: null });
-    assert.equal(result.error, 'Sign in to use Wiser CRM.');
-  });
+  for (const path of ['/', '/api/contacts', '/llms.txt', '/contacts/1']) {
+    await t.test(`case 1: GET ${path} without a token is 401 from the wrapper`, async () => {
+      const result = await refused('GET', path, 401, { token: null });
+      assert.equal(result.error, 'Sign in to use Wiser CRM.');
+    });
+  }
   await t.test('cases 2 and 5: forged X-Clawnify-User-Id is 403 with no token, a person token or an agent token', async () => {
     for (const token of [null, app.person, app.agent]) {
       await refused('GET', '/api/contacts', 403, { token, headers: { 'X-Clawnify-User-Id': 'forged' } });
@@ -39,6 +41,10 @@ test('pass-list sign-in cases through the real local Worker', { timeout: 120_000
     await refused('GET', '/api/contacts', 401, { token: await app.mint({ iss: 'https://another.cloudflareaccess.com' }) });
   });
   for (const path of ['/api/email-sync/run', '/api/ai-columns/run', '/api/meetings/run', '/api/email-sync/%72un']) {
+    await t.test(`case 1: unsigned POST ${path} is 401 from the wrapper`, async () => {
+      const result = await refused('POST', path, 401, { token: null });
+      assert.equal(result.error, 'Sign in to use Wiser CRM.');
+    });
     await t.test(`case 4: POST ${path} is 403 for person and agent`, async () => {
       for (const token of [app.person, app.agent]) {
         const result = await refused('POST', path, 403, { token });
@@ -58,7 +64,9 @@ test('pass-list sign-in cases through the real local Worker', { timeout: 120_000
       assert.equal(listed.total, 0);
     }
   });
-  await t.test('case 10: non-local Host with no token is refused by the local entry, 403', async () => {
+  // Pass-list case 10, an address Access does not cover reaching the wrapper
+  // without a credential, is worker/sign-in.test.ts's workers.dev case.
+  await t.test('local entry refuses a non-local Host with no token, 403', async () => {
     // TCP still goes only to 127.0.0.1. The Host makes the Worker's URL non-local.
     for (const path of ['/', '/api/contacts', '/llms.txt', '/contacts/1']) {
       const result = await refused('GET', path, 403, { token: null, headers: { Host: 'outside.example.test' } });
