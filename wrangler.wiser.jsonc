@@ -9,7 +9,8 @@
     {
       "binding": "DB",
       "database_name": "wiser-crm-db",
-      "database_id": "local"
+      "database_id": "local",
+      "migrations_dir": "migrations"
     }
   ],
   "assets": {
