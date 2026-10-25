@@ -66,8 +66,8 @@ for (const [name, change, reason] of [
   ['link outside runtime', s => s.replace('version: link:runtime/app', 'version: link:../elsewhere'), /link outside runtime\/: @clawnify\/app/],
   ['packages key', s => s.replace('packages:\n', "packages:\n  '@clawnify/integrations@0.4.0': {}\n"), /packages key names the scope: @clawnify\/integrations/],
   ['snapshots key', s => s.replace('snapshots:\n', "snapshots:\n  '@clawnify/routes@0.3.0': {}\n"), /snapshots key names the scope: @clawnify\/routes/],
-  ['tarball', s => s + '    resolution: {tarball: https://registry.npmjs.org/@clawnify/app/-/app.tgz}\n', /tarball or resolution\/value names the scope/],
-  ['encoded resolution', s => s + '    resolution: https://registry.npmjs.org/%40CLAWNIFY%2Fapp\n', /resolution\/value names the scope/],
+  ['tarball', s => s.replace('packages:\n', 'packages:\n  control@1.0.0:\n    resolution: {tarball: https://registry.npmjs.org/@clawnify/app/-/app.tgz}\n'), /tarball or resolution\/value names the scope/],
+  ['encoded resolution', s => s.replace('packages:\n', 'packages:\n  control@1.0.0:\n    resolution: https://registry.npmjs.org/%40CLAWNIFY%2Fapp\n'), /resolution\/value names the scope/],
   ['missing version', s => s.replace('        version: link:runtime/app\n', ''), /missing link: version/],
 ]) test(`A rejects ${name} for its planted reason`, t => {
   const f = fixture(t); f.write('pnpm-lock.yaml', change(cleanLock)); f.run('lockfile', 1, reason);
@@ -255,4 +255,77 @@ test('S10b finding 6: README states the checks measured coverage and limits', ()
   assert.match(readme, /each check covers (?:only )?the strings and paths it resolves/i);
   assert.match(readme, /runtime link is trusted only after its tree is walked/i);
   assert.match(readme, /contents, copied code and other builders. records are outside/i);
+});
+
+test('S10b amended grammar: block sequences are read and scope-checked', async t => {
+  for (const [name, scalar, status, reason] of [
+    ['plain scalar', 'fixture-dep', 0],
+    ['single quoted scalar', "'@fixture/dep'", 0],
+    ['scope scalar', "'@clawnify/integrations'", 1, /resolution\/value names the scope/],
+    ['encoded scope scalar', "'%40clawnify%2fintegrations'", 1, /resolution\/value names the scope/],
+    ['double quoted scalar', '"fixture-dep"', 2, /unrecognized.*line/],
+    ['mapping item', 'name: fixture-dep', 2, /unrecognized.*line/],
+  ]) await t.test(name, t => {
+    const f = fixture(t);
+    f.write('pnpm-lock.yaml', cleanLock + `  control@1.0.0:\n    transitivePeerDependencies:\n      - ${scalar}\n`);
+    f.run('lockfile', status, reason);
+  });
+  await t.test('sequence without empty parent', t => {
+    const f = fixture(t); f.write('pnpm-lock.yaml', cleanLock + '    scalar: value\n      - fixture-dep\n');
+    f.run('lockfile', 2, /unrecognized.*line/);
+  });
+});
+
+
+test('S10b duplicate keys in inline mappings also fail closed', t => {
+  const f = fixture(t);
+  f.write('pnpm-lock.yaml', cleanLock.replace('{integrity: synthetic}', '{integrity: synthetic, integrity: duplicate}'));
+  f.run('lockfile', 2, /duplicate key.*integrity/);
+});
+
+test('S10b Wrangler uses the exact locked peer snapshot', async t => {
+  for (const extra of ['', '_lookalike']) await t.test(extra || 'exact peer pin', t => {
+    const f = fixture(t);
+    f.write('pnpm-lock.yaml', cleanLock.replace('packages:\n', "packages:\n  'wrangler@4.0.0': {}\n").replace('snapshots:\n', "snapshots:\n  'wrangler@4.0.0(@fixture/peer@1.0.0)': {}\n"));
+    const id = `node_modules/.pnpm/wrangler@4.0.0_@fixture+peer@1.0.0${extra}/node_modules/wrangler/_virtual_unenv_global_polyfill-@cloudflare-unenv-preset-node-console`;
+    fs.mkdirSync(path.dirname(path.join(f.repo, id)), { recursive: true });
+    f.worker.inputs[id] = {};
+    f.run('bundle-inputs', extra ? 1 : 0, extra ? /Wrangler virtual/ : undefined);
+  });
+});
+
+test('S10b recorder includes assets emitted by later generateBundle hooks', t => {
+  const f = fixture(t), releaseDir = path.dirname(checker);
+  fs.symlinkSync(path.join(path.dirname(releaseDir), 'node_modules/vite'), path.join(f.repo, 'node_modules/vite'));
+  f.write('release/ui-inputs.mjs', fs.readFileSync(path.join(releaseDir, 'ui-inputs.mjs')));
+  f.write('package.json', '{"type":"module"}\n');
+  f.write('vite.config.ts', `export default {
+    publicDir: 'static',
+    plugins: [{ name: 'synthetic-late-asset', generateBundle: { order: 'post', handler() {
+      this.emitFile({ type: 'asset', fileName: 'late.txt', originalFileName: 'stand-in/@clawnify/integrations/data.txt', source: 'synthetic asset' });
+    } } }]
+  };\n`);
+  f.write('index.html', '<script type="module" src="/src/main.js"></script>\n');
+  f.write('src/main.js', 'console.log("synthetic");\n');
+  f.write('static/nested/clean.txt', 'synthetic public file\n');
+  f.write('stand-in/@clawnify/integrations/data.txt', 'synthetic asset\n');
+  const output = path.join(f.base, 'recorded.json');
+  const build = spawnSync(process.execPath, [path.join(f.repo, 'release/ui-inputs.mjs'), output], { cwd: f.repo, encoding: 'utf8' });
+  assert.equal(build.status, 0, build.stdout + build.stderr);
+  Object.assign(f.ui, JSON.parse(fs.readFileSync(output, 'utf8')));
+  assert(f.ui.assets.some(asset => asset.fileName === 'index.html'), 'record must include final HTML asset');
+  assert(f.ui.publicFiles.includes(path.join(f.repo, 'static/nested/clean.txt')));
+  f.run('bundle-inputs', 1, /asset:late.txt.*@clawnify.*scope input outside runtime/);
+});
+
+test('S10b duplicate keys normalize unquoted YAML whitespace', t => {
+  const f = fixture(t);
+  f.write('pnpm-lock.yaml', cleanLock.replace('        version: link:runtime/app', '        version: link:runtime/app\n        version : 0.4.0'));
+  f.run('lockfile', 2, /duplicate key.*version/);
+});
+
+test('S10b plain block scalars may start with non-indicator punctuation', t => {
+  const f = fixture(t);
+  f.write('pnpm-lock.yaml', cleanLock + '  control@1.0.0:\n    values:\n      - -1\n      - ?plain\n      - :plain\n');
+  f.run('lockfile', 0);
 });

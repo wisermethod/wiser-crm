@@ -8,9 +8,23 @@ Run from a clean checkout with an empty pnpm store and cache. Use the same check
 
 A release build is blocked when any check prints FAIL or exits nonzero. Run `node --test release/clawnify-free.test.mjs` before using the checks; also prove each check fails against a local stand-in installed under a Clawnify name. Never fetch the published scope packages for a control.
 
-The lockfile check permits scope aliases only through links into our runtime. The install-log check permits only the root manifest and runtime-link events to name the scope, including encoded names. The bundle check permits our files, dependencies pinned in the lockfile and the fixed bundler-internal IDs documented in the script. It reads metadata and resolves paths, never package source.
+The lockfile check permits scope aliases only through links into our runtime.
+The install-log check permits only the root manifest and runtime-link events to
+name the scope, including encoded names. A runtime link is trusted only after its tree is walked with `lstat`: every nested link must exist and resolve inside
+`runtime/`. The bundle check covers chunk modules, emitted asset origins and
+files under Vite's configured `publicDir`. NUL-prefixed file IDs receive the
+same scope, ownership and lockfile-pin checks as other paths. Only the named
+pathless helpers and the two absent Wrangler virtual modules in the exact
+locked package directory have fixed exceptions. These checks read metadata
+and resolve paths, never package source.
 
-These checks prove the recorded install and bundle inputs exclude the seven published Clawnify packages. They do not inspect dependency contents, detect code copied into another name, prove runtime behavior, or authenticate records supplied by another builder. Rebuild from the release checkout; do not reuse old logs or input records. The parser supports pnpm lockfile version 9.0.
+Each check covers only the strings and paths it resolves. Contents, copied code and other builders' records are outside them. The checks do not establish
+runtime behavior or authenticate supplied evidence. Rebuild from the release
+checkout; do not reuse old logs or input records. The parser accepts pnpm
+lockfile version 9.0 block mappings and plain or single-quoted scalar block
+sequences, scanning every value for the scope. It rejects other unread syntax,
+backslashes, block scalars, duplicate mapping keys and any file whose first
+non-comment line is not `lockfileVersion: '9.0'`.
 
 ## Build a release of a commit
 
@@ -26,7 +40,7 @@ TMPDIR=/absolute/scratch node release/build.mjs \
 
 The builder clones with `--no-hardlinks`, checks out the commit detached and
 requires a clean tree. It installs the frozen lockfile into a new empty store
-and cache, runs the three unchanged S10 checks, builds both bundles, and counts
+and cache, runs the three S10 checks, builds both bundles, and counts
 upstream files against `git merge-base <commit> clawnify/main` in this fork.
 That ref must already exist locally; the builder never fetches it. A safety
 preflight refuses scope registry dependencies before installation; it permits

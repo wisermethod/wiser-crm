@@ -31,37 +31,135 @@ function read(p) {
   return fs.readFileSync(real, 'utf8');
 }
 function realOrResolved(p) {
-  // realpath reads directory metadata, never file contents; links cannot escape runtime/.
+  // Event prefixes only. Runtime targets use the strict tree walker below.
   try { return fs.realpathSync(p); }
   catch (e) { if (e.code === 'ENOENT') return path.resolve(p); throw e; }
 }
-function runtimeLink(repo, from, value) {
+// Read directory metadata only. Follow internal directory links once, so a
+// cycle cannot loop and a link cannot hide an unchecked subtree.
+function runtimeTree(repo, target) {
+  const runtime = path.join(repo, 'runtime'), findings = [], visited = new Set();
+  function visit(file) {
+    try {
+      const stat = fs.lstatSync(file);
+      const real = fs.realpathSync(file); // ENOENT is a failure, including dangling links.
+      if (!inside(real, runtime) || real === runtime) {
+        findings.push(`runtime link outside runtime/: ${file} -> ${real}`);
+        return;
+      }
+      if (stat.isSymbolicLink()) { visit(real); return; }
+      if (!stat.isDirectory() || visited.has(real)) return;
+      visited.add(real);
+      for (const name of fs.readdirSync(file)) visit(path.join(file, name));
+    } catch (e) { findings.push(`runtime target missing or unreadable: ${file} (${e.code ?? e.message})`); }
+  }
+  visit(target);
+  return findings;
+}
+function runtimeLink(repo, from, value, findings) {
   if (typeof value !== 'string' || !value.startsWith('link:')) return false;
-  const target = realOrResolved(path.resolve(from, value.slice(5)));
-  return inside(target, path.join(repo, 'runtime')) && target !== path.join(repo, 'runtime');
+  const target = path.resolve(from, value.slice(5));
+  const errors = runtimeTree(repo, target);
+  findings.push(...errors);
+  return !errors.length;
 }
 
-// pnpm v9 writes block mappings with quoted package keys. This intentionally
-// parses only that format; a different version/shape fails closed, not via a
-// permissive YAML loader with dependencies or package-source reads.
+// Inline maps (resolution, engines, etc.) are kept as scope-scanned values,
+// but their keys must obey the same uniqueness rule as block mappings.
+function checkFlow(value, line) {
+  if (!/^[{[]/.test(value)) return;
+  let i = 0;
+  const fail = () => { throw new Error(`unrecognized lockfile line ${line}`); };
+  const space = () => { while (/\s/.test(value[i] ?? '') && i < value.length) i++; };
+  function scalar(key = false) {
+    space();
+    const quote = value[i];
+    if (quote === "'" || quote === '"') {
+      i++; let result = '';
+      while (i < value.length) {
+        if (value[i] === quote) {
+          if (quote === "'" && value[i + 1] === quote) { result += quote; i += 2; continue; }
+          i++; return result;
+        }
+        result += value[i++];
+      }
+      fail();
+    }
+    const start = i;
+    while (i < value.length && !',}]'.includes(value[i]) && !(key && value[i] === ':')) i++;
+    const result = value.slice(start, i).trim();
+    if (!result) fail();
+    return result;
+  }
+  function node() {
+    space();
+    if (value[i] !== '{' && value[i] !== '[') { scalar(); return; }
+    const mapping = value[i++] === '{', end = mapping ? '}' : ']', keys = new Set();
+    space();
+    if (value[i] === end) { i++; return; }
+    while (i < value.length) {
+      if (mapping) {
+        const key = scalar(true);
+        if (keys.has(key)) throw new Error(`duplicate key ${key} at lockfile line ${line}`);
+        keys.add(key); space();
+        if (value[i++] !== ':') fail();
+      }
+      node(); space();
+      if (value[i] === end) { i++; return; }
+      if (value[i++] !== ',') fail();
+      space();
+      if (value[i] === end) { i++; return; }
+    }
+    fail();
+  }
+  node(); space();
+  if (i !== value.length) fail();
+}
+
+// Read pnpm v9's block mappings and scalar block sequences explicitly. All
+// values (including inline flow values) remain visible to the scope scan.
+// Unsupported syntax fails closed rather than being dropped or YAML-decoded.
 function lockRows(text) {
-  if (!/^lockfileVersion:\s*['"]?9\.0['"]?\s*$/m.test(text)) throw new Error('expected pnpm lockfileVersion 9.0');
-  const rows = [], stack = [];
-  for (const [i, line] of text.split(/\r?\n/).entries()) {
+  const lines = text.split(/\r?\n/);
+  if (lines.find(line => line.trim() && !line.trimStart().startsWith('#')) !== "lockfileVersion: '9.0'") {
+    throw new Error("first non-comment line must be lockfileVersion: '9.0'");
+  }
+  if (text.includes('\\')) throw new Error('backslash in lockfile');
+  const rows = [], stack = [], root = { keys: new Set() };
+  for (const [i, line] of lines.entries()) {
     if (!line.trim() || line.trimStart().startsWith('#')) continue;
-    const m = /^( *)(?:(['"])(.*?)\2|([^'"].*?)):\s*(.*)$/.exec(line);
-    if (!m) {
-      if (scoped(line)) rows.push({ line: i + 1, key: '', value: line, parents: [] });
+    const indent = /^ */.exec(line)[0].length;
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    const parent = stack.at(-1) ?? root;
+    const fail = () => { throw new Error(`unrecognized lockfile line ${i + 1}`); };
+    if (line.includes('\t') || (parent !== root && parent.value !== '')) fail();
+    const seq = /^( *)- (.+)$/.exec(line);
+    if (seq) {
+      const scalar = seq[2].trimEnd();
+      // pnpm emits plain or single-quoted scalars, never nested list mappings.
+      const quoted = /^'(?:[^']|'')*'$/.test(scalar);
+      const plain = !/^(?:\s|[-?:](?:\s|$)|[[\]{},&*!|>'"%@`#])/.test(scalar) && !/:($|\s)|\s#/.test(scalar);
+      if (parent === root || (!quoted && !plain) || parent.kind === 'mapping' || (parent.childIndent !== undefined && parent.childIndent !== indent)) fail();
+      parent.kind = 'sequence'; parent.childIndent = indent;
+      rows.push({ line: i + 1, indent, key: '', value: unquote(scalar).replace(/''/g, "'"), parents: [...stack] });
       continue;
     }
-    const row = { line: i + 1, indent: m[1].length, key: m[3] ?? m[4], value: unquote(m[5]), parents: [] };
-    while (stack.length && stack.at(-1).indent >= row.indent) stack.pop();
-    row.parents = [...stack];
-    rows.push(row);
-    stack.push(row);
+    const m = /^( *)(?:'((?:[^']|'')*)'|"([^"\n]*)"|([^'"\s][^\n]*?)):(?: +|$)(.*)$/.exec(line);
+    if (!m || parent.kind === 'sequence' || (parent.childIndent !== undefined && parent.childIndent !== indent)) fail();
+    const key = m[2] !== undefined ? m[2].replace(/''/g, "'") : m[3] ?? m[4].trimEnd();
+    const value = m[5].trimEnd();
+    if (/^[?!&*{}[\],>#%|`]/.test(key)) fail();
+    if (/^[|>]/.test(value)) throw new Error(`block scalar at lockfile line ${i + 1}`);
+    if ((value.startsWith("'") && !/^'(?:[^']|'')*'$/.test(value)) || (value.startsWith('"') && !/^"[^"\n]*"$/.test(value))) fail();
+    checkFlow(value, i + 1);
+    if (parent.keys.has(key)) throw new Error(`duplicate key ${key} at lockfile line ${i + 1}`);
+    parent.keys.add(key); parent.kind = 'mapping'; parent.childIndent = indent;
+    const row = { line: i + 1, indent, key, value: unquote(value).replace(/''/g, "'"), parents: [...stack], keys: new Set() };
+    rows.push(row); stack.push(row);
   }
   return rows;
 }
+
 export function lockfile(repo, text) {
   const rows = lockRows(text), findings = [];
   for (const row of rows) {
@@ -75,11 +173,11 @@ export function lockfile(repo, text) {
         const from = path.resolve(repo, row.parents[1].key);
         if (!version || !version.value.startsWith('link:')) {
           findings.push(`line ${version?.line ?? row.line}: importer resolves ${row.key} to ${version?.value ?? '(missing link: version)'}`);
-        } else if (!runtimeLink(repo, from, version.value)) {
+        } else if (!runtimeLink(repo, from, version.value, findings)) {
           findings.push(`line ${version.line}: link outside runtime/: ${row.key} -> ${version.value}`);
         }
         const spec = children.find(r => r.key === 'specifier');
-        if (spec && !runtimeLink(repo, from, spec.value)) findings.push(`line ${spec.line}: importer specifier is not a runtime link: ${row.key} -> ${spec.value}`);
+        if (spec && !runtimeLink(repo, from, spec.value, findings)) findings.push(`line ${spec.line}: importer specifier is not a runtime link: ${row.key} -> ${spec.value}`);
       } else findings.push(`line ${row.line}: unexpected scope key: ${row.key}`);
     }
     if (scoped(row.value)) findings.push(`line ${row.line}: tarball or resolution/value names the scope: ${row.key}: ${row.value}`);
@@ -117,13 +215,13 @@ export function installLog(repo, text) {
           if (t.length === 3 && groups.has(t[1]) && /^@clawnify\//i.test(t[2])) {
             const name = t[2].slice('@clawnify/'.length);
             const value = manifest[t[1]][t[2]];
-            allowed = aliases.has(name) && value === `link:./runtime/${name}` && runtimeLink(repo, repo, value);
+            allowed = aliases.has(name) && value === `link:./runtime/${name}` && runtimeLink(repo, repo, value, findings);
             if (!allowed) findings.push(`line ${i + 1}: manifest scope dependency is not an allowed runtime link: ${t[2]} -> ${value}`);
           }
         }
       } else if (event.name === 'pnpm:root' && !ref.isKey && t.length === 2 && t[1] === 'name' && /^@clawnify\/[^/]+$/i.test(ref.value)) {
         const linkedFrom = event[t[0]]?.linkedFrom;
-        allowed = typeof linkedFrom === 'string' && inside(realOrResolved(path.resolve(repo, linkedFrom)), path.join(repo, 'runtime'));
+        allowed = typeof linkedFrom === 'string' && runtimeLink(repo, repo, `link:${linkedFrom}`, findings);
         if (!allowed) findings.push(`line ${i + 1}: pnpm:root missing linkedFrom under runtime/: ${ref.value} -> ${linkedFrom ?? '(missing)'}`);
       }
       if (!allowed) findings.push(`line ${i + 1}: ${event.name} unexpected scope at $.${t.join('.')}: ${ref.value}`);
@@ -133,10 +231,14 @@ export function installLog(repo, text) {
   return findings;
 }
 
-// Fixed bundler-internal categories. Rollup reserves NUL-prefixed ids for
-// synthetic modules (Vite helpers and CommonJS proxies); these are not files.
-// Vite also emits its preload helper under this exact non-NUL id.
-const internalIds = [id => id.startsWith('\0'), id => id === 'vite/preload-helper.js'];
+// The real Vite record has exactly these three pathless NUL helpers. Other
+// NUL IDs carry file paths and must pass the ordinary ownership/pin checks.
+const internalIds = new Set([
+  '\0commonjsHelpers.js',
+  '\0vite/modulepreload-polyfill.js',
+  '\0vite/preload-helper.js',
+  'vite/preload-helper.js', // Vite also emits this exact non-NUL helper.
+]);
 // Wrangler's handleNodeJSGlobals synthesizes these two onLoad modules under its
 // package directory, without creating files. Permit exactly these basenames,
 // only for Worker inputs and only beneath the locked Wrangler package.
@@ -144,13 +246,25 @@ const wranglerVirtualNames = new Set([
   '_virtual_unenv_global_polyfill-@cloudflare-unenv-preset-node-console',
   '_virtual_unenv_global_polyfill-@cloudflare-unenv-preset-node-process',
 ]);
-function wranglerVirtual(repo, id, pins) {
+function wranglerDirectory(lockText, pins) {
+  const versions = pins.filter(p => p.name === 'wrangler');
+  if (versions.length !== 1) return null;
+  const base = `wrangler@${versions[0].version}`;
+  const snapshots = lockRows(lockText).filter(r => r.parents.length === 1 && r.parents[0].key === 'snapshots' && (r.key === base || r.key.startsWith(base + '(')));
+  // pnpm's directory encoding for the exact snapshot (including its peers).
+  const directories = new Set(snapshots.map(r => r.key.replaceAll('/', '+').replaceAll(')(', '_').replaceAll('(', '_').replaceAll(')', '')));
+  if (!directories.size) return base; // Synthetic no-peer fixture without a snapshot.
+  return directories.size === 1 ? [...directories][0] : null;
+}
+function wranglerVirtual(repo, id, directory) {
   const absolute = path.resolve(repo, id);
   const parts = path.relative(repo, absolute).split(path.sep);
-  if (parts.length !== 6 || parts[0] !== 'node_modules' || parts[1] !== '.pnpm' || parts[3] !== 'node_modules' || parts[4] !== 'wrangler' || !wranglerVirtualNames.has(parts[5])) return false;
-  if (!pins.some(p => p.name === 'wrangler' && (parts[2] === `wrangler@${p.version}` || parts[2].startsWith(`wrangler@${p.version}_`)))) return false;
+  if (!directory || parts.length !== 6 || parts[0] !== 'node_modules' || parts[1] !== '.pnpm' || parts[2] !== directory || parts[3] !== 'node_modules' || parts[4] !== 'wrangler' || !wranglerVirtualNames.has(parts[5])) return false;
+  try { fs.lstatSync(absolute); return false; }
+  catch (e) { if (e.code !== 'ENOENT') return false; }
   try { return fs.realpathSync(path.dirname(absolute)) === path.dirname(absolute); } catch { return false; }
 }
+
 function packagePins(text) {
   return lockRows(text).filter(r => r.parents.length === 1 && r.parents[0].key === 'packages').map(r => {
     const m = /^(@[^/]+\/[^@]+|[^@/]+)@([^()]+)(?:\(.*\))?$/.exec(r.key);
@@ -159,8 +273,9 @@ function packagePins(text) {
 }
 export function bundleInputs(repo, lockText, worker, ui) {
   const pins = packagePins(lockText), findings = [];
+  const wranglerDir = wranglerDirectory(lockText, pins);
   if (!worker?.inputs || typeof worker.inputs !== 'object' || Array.isArray(worker.inputs)) throw new Error('Worker metafile must have an inputs object');
-  if (!ui || ui.root !== repo || !Array.isArray(ui.chunks) || !ui.chunks.length) throw new Error('UI input record must have this repository root and nonempty chunks');
+  if (!ui || ui.root !== repo || !Array.isArray(ui.chunks) || !ui.chunks.length || !Array.isArray(ui.assets) || !Array.isArray(ui.publicFiles)) throw new Error('UI input record must have this repository root and nonempty chunks');
   const workerIds = Object.keys(worker.inputs);
   if (!workerIds.length) findings.push('worker: no bundle inputs');
   const entries = workerIds.map(id => ['worker', id]);
@@ -168,18 +283,37 @@ export function bundleInputs(repo, lockText, worker, ui) {
     if (typeof chunk.fileName !== 'string' || !Array.isArray(chunk.modules) || !chunk.modules.length || chunk.modules.some(id => typeof id !== 'string')) throw new Error('invalid or empty UI chunk modules');
     entries.push(...chunk.modules.map(id => [`ui:${chunk.fileName}`, id]));
   }
+  for (const asset of ui.assets) {
+    if (typeof asset.fileName !== 'string' || !Array.isArray(asset.originalFileNames) || asset.originalFileNames.some(id => typeof id !== 'string')) throw new Error('invalid UI asset origins');
+    entries.push(...asset.originalFileNames.map(id => [`ui:asset:${asset.fileName}`, id]));
+  }
+  if (ui.publicFiles.some(id => typeof id !== 'string')) throw new Error('invalid UI public files');
+  entries.push(...ui.publicFiles.map(id => ['ui:public', id]));
   for (const [source, id] of entries) {
     const label = `${source}: ${JSON.stringify(id)}`;
-    // Strip only Vite's query suffix. Resolve links before deciding ownership.
-    const file = id.split('?')[0];
-    const real = id.includes('\0') ? null : (() => { try { return fs.realpathSync(path.resolve(repo, file)); } catch { return null; } })();
+    // CommonJS proxy IDs have one NUL prefix and one trailing query. Helpers
+    // are exempt only by exact ID; every path otherwise takes the same checks.
+    const file = (id.startsWith('\0') ? id.slice(1) : id).replace(/\?[^?]*$/, '');
+    const real = (() => { try { return fs.realpathSync(path.resolve(repo, file)); } catch { return null; } })();
     if (scoped(id) || (real && scoped(real))) {
-      if (real && inside(real, path.join(repo, 'runtime'))) continue;
-      findings.push(`${label}: scope input outside runtime/`);
+      if (!real || !inside(real, path.join(repo, 'runtime'))) {
+        findings.push(`${label}: scope input outside runtime/`);
+        continue;
+      }
+    }
+    if (real && inside(real, path.join(repo, 'runtime'))) {
+      const root = path.join(repo, 'runtime', path.relative(path.join(repo, 'runtime'), real).split(path.sep)[0]);
+      findings.push(...runtimeTree(repo, root).map(error => `${label}: ${error}`));
       continue;
     }
-    if (internalIds.some(accept => accept(id))) continue;
-    if (source === 'worker' && wranglerVirtual(repo, id, pins)) continue;
+    if (internalIds.has(id)) continue;
+    // Reserve these basenames: a real file cannot fall through to the ordinary
+    // locked-package allowance, and a lookalike directory is never synthetic.
+    if (wranglerVirtualNames.has(path.basename(file))) {
+      if (source === 'worker' && wranglerVirtual(repo, file, wranglerDir)) continue;
+      findings.push(`${label}: invalid Wrangler virtual input`);
+      continue;
+    }
     if (!real) { findings.push(`${label}: input path cannot be resolved`); continue; }
     if (!inside(real, repo)) { findings.push(`${label}: input outside fork -> ${real}`); continue; }
     const parts = path.relative(repo, real).split(path.sep);
