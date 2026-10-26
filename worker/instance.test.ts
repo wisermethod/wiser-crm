@@ -74,7 +74,8 @@ for (const flag of ["true", "yes", "FALSE", "0", " "]) {
         assert.deepEqual(await response.json(), error);
         assert.equal(response.headers.get("Cache-Control"), "no-store");
       }
-      for (const path of [...writingGets, "/api/email-%73ync?check=1", "/api/contacts/a%20b/emails"]) {
+      for (const path of [...writingGets, "/api/email-%73ync?check=1", "/api/contacts/a%20b/emails",
+        "/api/contacts/1/emails%0a", "/api/contacts/1/emails%0d", "/api/contacts/1/emails%E2%80%A8", "/api/contacts/1/emails%E2%80%A9"]) {
         for (const method of ["GET", "HEAD"]) {
           const response = await h.fetch(path, method, credential);
           assert.equal(response.status, 503, `${method} ${path}`);

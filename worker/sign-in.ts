@@ -125,7 +125,11 @@ export async function signIn<E extends AssetEnvironment, C>(
   }
   // Hono runs GET handlers for HEAD too. Apply this before every existing
   // app/asset policy so no downstream code runs for an upgrade-time write.
-  if (readOnly && ((request.method !== "GET" && request.method !== "HEAD") || isWritingGet(path))) {
+  // A route regex's `$` matches before one trailing line terminator, so a path
+  // ending in an encoded newline still reaches its handler; fail closed on any
+  // control or line-separator character while read-only.
+  if (readOnly && ((request.method !== "GET" && request.method !== "HEAD") || isWritingGet(path)
+    || /[\u0000-\u001f\u007f\u2028\u2029]/.test(path))) {
     return refusal(503, "The CRM is read-only during an upgrade.");
   }
   if (request.method === "POST" && publicRuns.has(path)) {
