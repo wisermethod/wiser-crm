@@ -22,6 +22,8 @@
   "vars": {
     "ACCESS_TEAM_DOMAIN": "",
     "ACCESS_AUD": "",
-    "AGENT_CLIENT_ID": ""
+    "AGENT_CLIENT_ID": "",
+    "WISER_INSTANCE": "",
+    "WISER_READ_ONLY": ""
   }
 }

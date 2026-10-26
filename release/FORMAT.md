@@ -47,7 +47,7 @@ zero sizes below are explanatory; real digests, commits and sizes are measured.
     "compatibility_flags": ["nodejs_compat"],
     "d1_binding": "DB",
     "assets_binding": "ASSETS",
-    "vars_required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "AGENT_CLIENT_ID"],
+    "vars_required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "AGENT_CLIENT_ID", "WISER_INSTANCE", "WISER_READ_ONLY"],
     "modules": [
       {"name": "index.js", "type": "application/javascript+module", "sha256": "<sha256>", "size": 0}
     ]
@@ -106,6 +106,13 @@ history semantics described in that README, including recording applied SQL
 filenames rather than introducing a second migration history.
 
 ## Changes from format 1
+
+`WISER_INSTANCE` is the install's connection label, returned after verification
+by `GET /api/wiser/instance`, which returns 503 when the name is empty or unset.
+`WISER_READ_ONLY` stops writing methods and writing GET/HEAD routes during an
+upgrade whenever its value is set and is neither empty nor exactly `false`.
+The instance response also reports the verified caller, the read-only boolean
+and the release version embedded by `release/build.mjs`; other builds use `dev`.
 
 1. `format` becomes 2 because a format-1 validator rejects both the new fields
    and any migration. The provisional connector proof needs a format-2 consumer

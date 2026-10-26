@@ -8,7 +8,7 @@ open those packages; the fork uses its own `runtime/` links.
 Run every suite:
 
 ```bash
-WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs worker/sign-in.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs
 ```
 
 Run any suite individually:
@@ -16,10 +16,12 @@ Run any suite individually:
 ```bash
 WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/sign-in.e2e.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/instance.e2e.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/import.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/migrations.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/m2c-regressions.test.mjs
 node --test worker/sign-in.test.ts
+node --test worker/instance.test.ts
 node --test worker/dev/index.test.ts
 node --test release/clawnify-free.test.mjs
 ```
@@ -39,6 +41,9 @@ pnpm exec tsc --noEmit -p tsconfig.wiser.json
 | `tests/migrations.test.mjs` | Frozen baseline equality, working-schema drift, idempotent apply/adoption, safe refusal of partial adoption, and preservation of seeded records and custom columns through each later migration. Passing and destructive fixtures exercise the preservation checker even with a baseline-only chain. |
 | `tests/m2c-regressions.test.mjs` | Adoption refusals leave schema, history and rows unchanged; scratch-fork foreign-key and autoindex drift, adopt-then-upgrade, missing preservation controls, default-restoring rebuild, and observed running-wrapper unsigned request coverage. |
 | `worker/sign-in.test.ts` | Wrapper policy in isolation with real token verification and runtime identity: all sign-in pass-list cases except bundle/install/count cases 7 to 9, plus algorithm restrictions, key rotation, configuration, concurrent identities, and downstream-call isolation. |
+| `worker/instance.test.ts` | Instance identity and unnamed refusal; authentication before policy; writable unset/empty/false and fail-closed flags; all 12 writing GET routes and their HEAD equivalents; downstream isolation and reads/assets during upgrades. |
+| `tests/instance.e2e.test.mjs` | Instance and upgrade policy through the real local Worker for staff and agent, plus an exact inventory of every live upstream GET route against the wrapper's read/write classification. Re-audit existing handlers and helpers when upstream changes them; the inventory catches new routes, not changed effects on an existing path. |
+| `tests/release-instance.test.mjs` | Optional real release-output check, run with `WISER_TEST_RELEASES` below: five required variables, F1 10, all release checks PASS, and the embedded version and verified caller through each emitted production Worker. |
 | `worker/dev/index.test.ts` | Local-host and enable-flag guards, local sign-in cookie behavior, cross-site refusal, assertion precedence, cookie removal, missing keys and invalid credentials. |
 | `release/clawnify-free.test.mjs` | Synthetic fixtures for the lockfile, install-log and bundle-input checks, including refusal of registry packages, disguised paths and invalid evidence. See `release/README.md` for release evidence commands; these unit tests do not perform an install. |
 
@@ -51,7 +56,7 @@ by the real wrapper, and migrates fresh local D1 state using Wrangler
 before any scenario. No application or identity implementation is mocked.
 
 Keys, configuration, databases and build scratch stay under
-`/private/tmp/wiser-crm-m2b/`. Metrics, environment-file loading, remote bindings,
+`wiser-crm-local-tests/` in the invoking environment's `TMPDIR`. Metrics, environment-file loading, remote bindings,
 inspector, watching and external Worker fetches are disabled. Teardown disposes
 the Worker after success or failure and checks its public port is closed. The
 non-local Host case still connects only to `127.0.0.1`; the local entry returns
@@ -61,7 +66,7 @@ reaches the wrapper without a credential, gets 401, and calls neither app nor
 assets. The foreign-Host integration check proves only the local entry guard.
 
 `tests/migration-helpers.mjs` is the migration suite's shared helper. Its scratch
-root is `/private/tmp/wiser-crm-m2c/`; it uses local Wrangler migrations and
+root is `wiser-crm-migration-tests/` under `TMPDIR`; it uses local Wrangler migrations and
 `getPlatformProxy`, disposing every proxy. The SQL files in
 `tests/fixtures/migrations/` are the additive and destructive controls. Schema comparison includes every
 table's foreign keys, and every index's name, unique/partial flags and ordered
@@ -81,3 +86,13 @@ WRANGLER_SEND_METRICS=false WISER_MIGRATION_PLANTED_DROP=1 node --test --test-na
 Do not publish keys or tokens from scratch. The helpers print request paths,
 statuses and port cleanup, never credentials. Scratch directories remain for
 inspection; remove them only when no concurrent run is using them.
+
+After building two real releases as `release/README.md` describes, run the
+production bundles locally, with their JWKS fetch intercepted by the harness:
+
+```bash
+WRANGLER_SEND_METRICS=false WISER_TEST_RELEASES=/absolute/out1/wiser-crm/0.3.2,/absolute/out2/wiser-crm/0.3.2 node --test tests/release-instance.test.mjs
+```
+
+This verifies the bytes stored by the release builder (including their hashes
+and sizes), without a deployment or a request to an external key server.

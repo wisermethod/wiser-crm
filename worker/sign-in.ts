@@ -1,6 +1,8 @@
 import { getPath } from "hono/utils/url";
 import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { withIdentity, type Identity } from "../runtime/app/identity.ts";
+import { isWritingGet } from "./get-routes.ts";
+import { releaseVersion } from "./version.ts";
 
 export interface SignInConfiguration {
   teamDomain?: string;
@@ -17,6 +19,8 @@ export function isConfigured(config: SignInConfiguration): boolean {
 
 interface AssetEnvironment {
   ASSETS: { fetch(request: Request): Promise<Response> };
+  WISER_INSTANCE?: string;
+  WISER_READ_ONLY?: string;
 }
 
 export interface SignInDependencies<E, C> {
@@ -109,6 +113,21 @@ export async function signIn<E extends AssetEnvironment, C>(
   }
 
   const path = (dependencies.routePath ?? getPath)(request);
+  // Missing and empty are writable; every other spelling except exact false
+  // fails closed, so a mistyped upgrade flag cannot reopen writes.
+  const readOnly = env.WISER_READ_ONLY !== undefined
+    && env.WISER_READ_ONLY !== "" && env.WISER_READ_ONLY !== "false";
+  if ((request.method === "GET" || request.method === "HEAD") && path === "/api/wiser/instance") {
+    if (!env.WISER_INSTANCE) return refusal(503, "This install has no instance name.");
+    return Response.json({ instance: env.WISER_INSTANCE, version: releaseVersion, caller: identity.caller, read_only: readOnly }, {
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+  // Hono runs GET handlers for HEAD too. Apply this before every existing
+  // app/asset policy so no downstream code runs for an upgrade-time write.
+  if (readOnly && ((request.method !== "GET" && request.method !== "HEAD") || isWritingGet(path))) {
+    return refusal(503, "The CRM is read-only during an upgrade.");
+  }
   if (request.method === "POST" && publicRuns.has(path)) {
     return refusal(403, "Public job runs are not available in Wiser CRM.");
   }

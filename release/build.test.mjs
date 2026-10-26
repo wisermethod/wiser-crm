@@ -82,7 +82,7 @@ function assemblyFixture(t) {
   f.write('migrations/0002_next.sql', 'SELECT 2;\n');
   f.write('migrations/README.md', 'Migration instructions\n');
   f.write('migrations/adopt.mjs', '// adoption helper\n');
-  const options = { release: path.join(f.base, 'out/wiser-crm/0.1.0'), version: '0.1.0', created: '2026-10-25T12:00:00.000Z', source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } }, checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' }, config: { main: 'worker/index.ts', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_databases: [{ binding: 'DB' }], assets: { binding: 'ASSETS', not_found_handling: 'single-page-application', run_worker_first: true }, vars: { ACCESS_TEAM_DOMAIN: '', ACCESS_AUD: '', AGENT_CLIENT_ID: '' } }, workerDir: path.join(f.base, 'worker'), mainModule: 'index.js', assetsDir: path.join(f.base, 'assets'), migrationsDir: path.join(f.base, 'migrations'), table: 'd1_migrations' };
+  const options = { release: path.join(f.base, 'out/wiser-crm/0.1.0'), version: '0.1.0', created: '2026-10-25T12:00:00.000Z', source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } }, checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' }, config: { main: 'worker/index.ts', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_databases: [{ binding: 'DB' }], assets: { binding: 'ASSETS', not_found_handling: 'single-page-application', run_worker_first: true }, vars: readConfig(path.join(repo, 'wrangler.wiser.jsonc')).vars }, workerDir: path.join(f.base, 'worker'), mainModule: 'index.js', assetsDir: path.join(f.base, 'assets'), migrationsDir: path.join(f.base, 'migrations'), table: 'd1_migrations' };
   return { ...f, options };
 }
 
@@ -95,7 +95,7 @@ test('fixture matches FORMAT.md field for field, key order, exact bytes, hashes 
     format: 2, app: 'wiser-crm', version: '0.1.0', created: '2026-10-25T12:00:00.000Z',
     source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } },
     checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' },
-    worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_binding: 'DB', assets_binding: 'ASSETS', vars_required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
+    worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_binding: 'DB', assets_binding: 'ASSETS', vars_required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
     assets: { config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [asset('/assets/app.js', 'application/javascript', 'export default {};\n'), asset('/index.html', 'text/html; charset=utf-8', '<h1>fixture</h1>\n')] },
     migrations: { table: 'd1_migrations', files: [ref('0002_next.sql', 'SELECT 2;\n'), ref('0010_later.sql', 'SELECT 10;\n')] },
   };

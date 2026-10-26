@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const scratchRoot = '/private/tmp/wiser-crm-m2c';
+export const scratchRoot = join(tmpdir(), 'wiser-crm-migration-tests');
 await mkdir(scratchRoot, { recursive: true });
 Object.assign(process.env, {
   WRANGLER_SEND_METRICS: 'false', WRANGLER_HIDE_BANNER: 'true',

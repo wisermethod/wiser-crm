@@ -3,13 +3,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exportJWK, exportPKCS8, generateKeyPair, SignJWT } from 'jose';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const scratch = '/private/tmp/wiser-crm-m2b';
+const scratch = join(tmpdir(), 'wiser-crm-local-tests');
 await mkdir(scratch, { recursive: true });
 Object.assign(process.env, {
   WRANGLER_SEND_METRICS: 'false', WRANGLER_HIDE_BANNER: 'true',
@@ -31,7 +32,7 @@ async function portClosed(port) {
 }
 
 /** Real local entry, real wrapper, real app and a fresh Wrangler-migrated D1. */
-export async function startApp(t) {
+export async function startApp(t, { vars = {}, release } = {}) {
   const directory = await mkdtemp(join(scratch, 'worker-'));
   const persist = join(directory, 'state');
   const keys = await generateKeyPair('RS256', { extractable: true });
@@ -43,10 +44,41 @@ export async function startApp(t) {
   // Keep all Wrangler build/state files outside the checkout. These are the
   // local config's entry, flags and bindings, with absolute paths for scratch.
   const local = JSON.parse(await readFile(join(root, 'wrangler.local.jsonc'), 'utf8'));
+  let main = join(root, local.main);
+  let assets = join(root, local.assets.directory);
+  if (release) {
+    const manifest = JSON.parse(await readFile(join(release, 'manifest.json'), 'utf8'));
+    const { createHash } = await import('node:crypto');
+    async function unpack(record, destination) {
+      const bytes = await readFile(join(release, 'files', record.sha256));
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), record.sha256);
+      assert.equal(bytes.length, record.size);
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, bytes);
+    }
+    for (const record of manifest.worker.modules) await unpack(record, join(directory, 'modules', record.name));
+    for (const record of manifest.assets.files) await unpack(record, join(directory, 'assets', record.path.slice(1)));
+    main = join(directory, 'modules', manifest.worker.main_module);
+    assets = join(directory, 'assets');
+  }
+  // This installed Wrangler accepts dev.outboundService in its declarations
+  // but does not implement it. Enforce the test's network boundary inside the
+  // isolate, before any request, keeping app and emitted release bytes intact.
+  const bootstrap = join(directory, 'entry.mjs');
+  await writeFile(bootstrap, `import worker from ${JSON.stringify(main)};
+globalThis.fetch = async (input) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (${Boolean(release)} && url === 'https://local.cloudflareaccess.com/cdn-cgi/access/certs') {
+    return Response.json(${JSON.stringify(jwks)});
+  }
+  throw new Error('External network requests are forbidden in local tests');
+};
+export default worker;
+`);
   await writeFile(config, JSON.stringify({
-    ...local, main: join(root, local.main),
+    ...local, main: bootstrap, vars: { ...local.vars, ...vars },
     d1_databases: local.d1_databases.map((db) => ({ ...db, migrations_dir: join(root, db.migrations_dir) })),
-    assets: { ...local.assets, directory: join(root, local.assets.directory) },
+    assets: { ...local.assets, directory: assets },
     send_metrics: false,
   }));
   const migrated = spawnSync(process.execPath, [wranglerCli, 'd1', 'migrations', 'apply',
@@ -63,7 +95,6 @@ export async function startApp(t) {
       remote: false, persist, inspector: false, watch: false, liveReload: false,
       logLevel: 'none', server: { hostname: '127.0.0.1', port: 0 },
       registry: join(directory, 'registry'), generateTypes: false,
-      outboundService() { throw new Error('External network requests are forbidden in local tests'); },
     },
   });
   // Register teardown immediately, including when readiness or an assertion fails.
@@ -120,7 +151,7 @@ export async function startApp(t) {
   }
   async function api(method, path, status, options) {
     const response = await request(method, path, options);
-    assert.equal(response.status, status, `${method} ${path}: expected ${status}, got ${response.status}`);
+    assert.equal(response.status, status, `${method} ${path}: expected ${status}, got ${response.status}; ${JSON.stringify(response.data)}`);
     t.diagnostic(`${method} ${path}: ${response.status}`);
     return response.data;
   }

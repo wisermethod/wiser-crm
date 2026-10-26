@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { baseline, command, database, execute, preservationCase, preserves, root, sameShape, shape, snapshot } from './migration-helpers.mjs';
+import { baseline, command, database, execute, preservationCase, preserves, root, sameShape, shape, snapshot, scratchRoot } from './migration-helpers.mjs';
 
 const migrations = (await readdir(join(root, 'migrations'))).filter((name) => name.endsWith('.sql')).sort();
 const migrationFiles = migrations.map((name) => join(root, 'migrations', name));
@@ -18,7 +18,7 @@ test('baseline equals the schema it was frozen from, table by table, column by c
   const migrated = await database('baseline', join(root, 'migrations'));
   // This case intentionally applies only the baseline as later migrations grow.
   const { cp, mkdtemp } = await import('node:fs/promises');
-  const baselineDirectory = await mkdtemp('/private/tmp/wiser-crm-m2a/baseline-only-');
+  const baselineDirectory = await mkdtemp(join(scratchRoot, 'baseline-only-'));
   await cp(migrationFiles[0], join(baselineDirectory, migrations[0]));
   const baselineDb = await database('baseline-only', baselineDirectory);
   baselineDb.apply();
@@ -107,7 +107,7 @@ for (const [label, alteration, missing] of [
 
 test('adoption refuses remote or missing-local arguments before accessing a database', async () => {
   const script = join(root, 'migrations/adopt.mjs');
-  for (const args of [[], ['db', '--remote', '--config', 'absent.json', '--persist-to', '/private/tmp/wiser-crm-m2a/unused']]) {
+  for (const args of [[], ['db', '--remote', '--config', 'absent.json', '--persist-to', join(scratchRoot, 'unused')]]) {
     const result = command(process.execPath, [script, ...args]);
     assert.notEqual(result.status, 0);
     assert.match(result.output, /Usage:|Unknown option/);

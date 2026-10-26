@@ -226,7 +226,7 @@ export function build(options) {
     install_log: () => check(1, ['install-log', checkout, path.join(work, 'install.ndjson')]),
     bundle_inputs: () => {
       run(process.execPath, ['release/ui-inputs.mjs', path.join(work, 'ui-inputs.json')], 'ui-build.log');
-      run('pnpm', ['exec', 'wrangler', 'deploy', '--dry-run', '--config', 'wrangler.wiser.jsonc', '--outdir', dirs.worker, '--metafile', path.join(dirs.worker, 'meta.json')], 'worker-build.log');
+      run('pnpm', ['exec', 'wrangler', 'deploy', '--dry-run', '--config', 'wrangler.wiser.jsonc', '--define', `__WISER_RELEASE_VERSION__:${JSON.stringify(options.version)}`, '--outdir', dirs.worker, '--metafile', path.join(dirs.worker, 'meta.json')], 'worker-build.log');
       return check(2, ['bundle-inputs', checkout, path.join(dirs.worker, 'meta.json'), path.join(work, 'ui-inputs.json')]);
     },
   }, checks => {

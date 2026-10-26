@@ -8,6 +8,8 @@ interface Environment {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   AGENT_CLIENT_ID?: string;
+  WISER_INSTANCE?: string;
+  WISER_READ_ONLY?: string;
 }
 
 // A team's resolver retains jose's cache and rotation handling across requests.
