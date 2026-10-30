@@ -12,7 +12,8 @@ in the manifest.
 - `manifest.json`: UTF-8 JSON, two-space indentation and a final LF.
 - `manifest.sig`: raw 64-byte Ed25519 signature over the exact manifest bytes.
   It is absent from an unsigned build. A later operator-controlled signing step
-  completes the release; the builder never creates a key or a signature.
+  completes the release; see `release/sign.mjs` and [Sign a release](README.md#sign-a-release).
+  The builder never creates a key or a signature.
 - `files/<sha256>`: module, asset and migration-directory bytes, keyed by their
   lowercase 64-character SHA-256 hex digest, without an extension. Identical
   contents share one file, even across categories. No unreferenced files belong

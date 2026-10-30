@@ -32,7 +32,7 @@ The unsigned release contract is [FORMAT.md](FORMAT.md), format 2. Run the
 builder from this fork, with its existing Node and pnpm tools available:
 
 ```sh
-node --test release/build.test.mjs release/clawnify-free.test.mjs
+node --test release/sign.test.mjs release/build.test.mjs release/clawnify-free.test.mjs
 TMPDIR=/absolute/scratch node release/build.mjs \
   --commit <40-character-fork-commit> --version 0.1.0 \
   --out /absolute/output/outside-the-repository --f1-limit 10
@@ -57,7 +57,35 @@ count. The manifest records the built commit, configuration, modules, assets and
 every migration-directory file, each stored by content digest.
 
 The result is `<out>/wiser-crm/<version>/manifest.json` and `files/`, with no
-`manifest.sig`. Building and testing create no signing key and no signature.
+`manifest.sig`. The builder never creates a signing key or a signature. The
+signer's tests use throwaway keys kept in memory and write signatures only in
+temporary directories.
 The operator's later signing step completes the release. To compare two builds,
 use different output bases and ignore only the manifest's `created` field;
 retain and report any other differences.
+
+## Sign a release
+
+Run this in your own Terminal, never through an agent, script or pipe, using the
+absolute release directory printed by the builder:
+
+```sh
+node release/sign.mjs <release directory>
+```
+
+The signer checks the release first and prints what it will sign, including the
+commits, F1 count and limit, all three checks, file counts and bytes, and manifest
+digest. Paste the 32-byte Ed25519 seed from your password manager only after
+`Release key (hidden):` appears, as 44 characters of standard base64, then press
+Enter. Input arriving earlier is refused unread as a key. Nothing is echoed;
+Ctrl-C or Ctrl-D aborts. It refuses any key but the public half identified in
+[`key.json`](key.json), release key `67d424dc40b23ed9`, and keeps the key only in
+process memory.
+
+It writes only `manifest.sig`, never overwrites one, and verifies the signature
+before and after writing with Web Crypto as Wiser does. The manifest's exact
+bytes must still match immediately before the write; after writing, verification
+uses the manifest read afresh from disk. The signature appears only after its
+temporary file has been written and synced. Stdout is one JSON line
+with the release directory, app, version, key id, manifest SHA-256 and signature
+filename.
