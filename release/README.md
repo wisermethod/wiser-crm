@@ -26,6 +26,55 @@ sequences, scanning every value for the scope. It rejects other unread syntax,
 backslashes, block scalars, duplicate mapping keys and any file whose first
 non-comment line is not `lockfileVersion: '9.0'`.
 
+## The weekly upstream report
+
+The scheduled `upstream-report.yml` workflow compares fetched upstream commits
+with the last merged upstream commit and files a report as an issue. F10 stops
+before making a trial copy if LICENSE bytes, any package licence field or the
+lockfile's set of Clawnify names changes. A disposable independent clone, with
+no remote back to the checkout, tries the merge, counts modified/deleted
+upstream files against the limit 10 and checks the lockfile. Before pnpm starts
+it runs the release build's scope preflight on the merged tree and stops if the
+merge changes the root `package.json` beyond its descriptive fields (its scripts,
+dependencies and `pnpm` field included), a patch file that field names, or a
+file pnpm reads at install (`pnpm-workspace.yaml`, `.npmrc`, a pnpmfile): what
+pnpm and the build steps run reaches them as HEAD has it. Then it installs frozen dependencies with an
+NDJSON log, audits that log, and runs both typechecks, the build and the full
+suite in `tests/README.md`. The report includes failures, conflicts and the
+last 40 output lines per step. Outside those logs `&` and `<` are escaped, and
+every `@` is broken with a word joiner, so the issue mentions no one, Clawnify
+included; it is cut to 60,000
+characters to fit an issue body.
+
+It never pushes, merges into `main`, regenerates the lockfile or reads a
+Clawnify package. The licence watch reads only the seven latest-version
+registry metadata endpoints, retaining only `version`, `license` and `licenses`.
+A failed metadata read is unread, not evidence of no licence. A session handles
+the actual merge and any lockfile regeneration; the operator approves each release.
+
+Against an already fetched `clawnify/main`, from a clean checkout:
+
+```sh
+gh api repos/wisermethod/wiser-crm/actions/workflows > /absolute/scratch/workflows.json
+node release/upstream-report.mjs --repo . --upstream clawnify/main \
+  --out /absolute/scratch/new-report --workflows /absolute/scratch/workflows.json
+node --test release/upstream-report.test.mjs
+WISER_REPORT_CONTROLS=1 node --test release/upstream-report.test.mjs
+```
+
+Use a fresh output directory outside the checkout. It holds
+`upstream-report.md`, `upstream-report.json` and, if installation was attempted,
+`install.ndjson`. A produced report exits zero even when its verdict stops;
+failure to produce the report exits nonzero. Tests stub every registry read
+and package-manager step and need only Node and git. The optional controls break
+each stop check in a scratch copy, require its test to fail, restore the check,
+and require that same test to pass.
+
+Turning Actions on requires the operator's go and must be followed at once by
+`gh workflow disable sync-branches.yml`. That inherited workflow pushes a
+`master` branch on every push to `main` (F8). The report warns unless the supplied
+workflow list shows it as `disabled_manually`.
+
 ## Build a release of a commit
 
 The unsigned release contract is [FORMAT.md](FORMAT.md), format 2. Run the

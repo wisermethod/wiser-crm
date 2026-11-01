@@ -8,7 +8,7 @@ open those packages; the fork uses its own `runtime/` links.
 Run every suite:
 
 ```bash
-WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs release/upstream-report.test.mjs
 ```
 
 Run any suite individually:
@@ -24,6 +24,7 @@ node --test worker/sign-in.test.ts
 node --test worker/instance.test.ts
 node --test worker/dev/index.test.ts
 node --test release/clawnify-free.test.mjs
+node --test release/upstream-report.test.mjs
 ```
 
 Also check both application and Wiser types:
@@ -46,6 +47,7 @@ pnpm exec tsc --noEmit -p tsconfig.wiser.json
 | `tests/release-instance.test.mjs` | Optional real release-output check, run with `WISER_TEST_RELEASES` below: five required variables, F1 10, all release checks PASS, and the embedded version and verified caller through each emitted production Worker. |
 | `worker/dev/index.test.ts` | Local-host and enable-flag guards, local sign-in cookie behavior, cross-site refusal, assertion precedence, cookie removal, missing keys and invalid credentials. |
 | `release/clawnify-free.test.mjs` | Synthetic fixtures for the lockfile, install-log and bundle-input checks, including refusal of registry packages, disguised paths and invalid evidence. See `release/README.md` for release evidence commands; these unit tests do not perform an install. |
+| `release/upstream-report.test.mjs` | Scratch upstream/fork histories, clean and conflicting trial merges, F10/F1 stops, frozen-lockfile failures, independent checks, metadata-only licence watch, workflow warnings, unchanged caller refs/index/worktrees and cleanup. Every network and package-manager operation is stubbed. Optional break-and-restore controls: `WISER_REPORT_CONTROLS=1 node --test release/upstream-report.test.mjs`. |
 
 `tests/local-worker.mjs` is the shared integration harness, not a test file. It
 starts the real `worker/dev/index.ts` using Wrangler's `unstable_startWorker`,
