@@ -2,6 +2,7 @@ import { getPath } from "hono/utils/url";
 import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { withIdentity, type Identity } from "../runtime/app/identity.ts";
 import { isWritingGet } from "./get-routes.ts";
+import type { TakeInCounts } from "./take-in.ts";
 import { releaseVersion } from "./version.ts";
 
 export interface SignInConfiguration {
@@ -25,6 +26,7 @@ interface AssetEnvironment {
 
 export interface SignInDependencies<E, C> {
   appFetch(request: Request, env: E, context: C): Response | Promise<Response>;
+  takeIn?: () => Promise<TakeInCounts>;
   keySet: JWTVerifyGetKey | null;
   configuration: SignInConfiguration;
   /** The path the app routes on. Hono decodes percent-escapes before routing,
@@ -139,8 +141,22 @@ export async function signIn<E extends AssetEnvironment, C>(
     return refusal(409, "This feature is not available in Wiser CRM.");
   }
 
+  if (request.method === "POST" && path === "/api/wiser/intake/take-in") {
+    if (!dependencies.takeIn) return refusal(409, "Intake is not configured.");
+    try {
+      return Response.json(await dependencies.takeIn(), { headers: { "Cache-Control": "no-store" } });
+    } catch {
+      return refusal(503, "Intake is unavailable.");
+    }
+  }
   if (path.startsWith("/api/") || path === "/llms.txt") {
     return dependencies.appFetch(request, withIdentity(env, identity), context);
+  }
+  if (!readOnly && identity.caller === "user" && request.method === "GET"
+    && request.headers.get("Accept")?.toLowerCase().includes("text/html")
+    && dependencies.takeIn && typeof context === "object" && context !== null
+    && "waitUntil" in context && typeof context.waitUntil === "function") {
+    context.waitUntil(Promise.resolve().then(dependencies.takeIn).catch(() => {}));
   }
   return env.ASSETS.fetch(request);
 }

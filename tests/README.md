@@ -8,7 +8,7 @@ open those packages; the fork uses its own `runtime/` links.
 Run every suite:
 
 ```bash
-WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs release/upstream-report.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs tests/intake.e2e.test.mjs tests/intake-bundle.test.mjs intake/worker.test.ts worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs release/upstream-report.test.mjs
 ```
 
 Run any suite individually:
@@ -20,6 +20,9 @@ WRANGLER_SEND_METRICS=false node --test tests/instance.e2e.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/import.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/migrations.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/m2c-regressions.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/intake.e2e.test.mjs
+WRANGLER_SEND_METRICS=false node --test tests/intake-bundle.test.mjs
+node --test intake/worker.test.ts
 node --test worker/sign-in.test.ts
 node --test worker/instance.test.ts
 node --test worker/dev/index.test.ts
@@ -41,6 +44,9 @@ pnpm exec tsc --noEmit -p tsconfig.wiser.json
 | `tests/import.test.mjs` | Three contacts followed by two overlapping and one new row leave four contacts; matching ignores case, fills a missing phone and preserves existing nonblank values and status. Same email with another first name creates a fifth contact and leaves the earlier records unchanged. |
 | `tests/migrations.test.mjs` | Frozen baseline equality, working-schema drift, idempotent apply/adoption, safe refusal of partial adoption, and preservation of seeded records and custom columns through each later migration. Passing and destructive fixtures exercise the preservation checker even with a baseline-only chain. |
 | `tests/m2c-regressions.test.mjs` | Adoption refusals leave schema, history and rows unchanged; scratch-fork foreign-key and autoindex drift, adopt-then-upgrade, missing preservation controls, default-restoring rebuild, and observed running-wrapper unsigned request coverage. |
+| `tests/intake.e2e.test.mjs` | The public intake and CRM Workers share one intake D1, alongside the CRM's own D1. Covers allowed form data, take-in, claims, note read-back and retry, import parity, company isolation, routing, response privacy, read-only and retention. |
+| `tests/intake-bundle.test.mjs` | Wrangler's dry-run metafile excludes CRM and Hono inputs. The intake config binds only its D1 and form settings, and the fork still edits ten upstream files. |
+| `intake/worker.test.ts` | The body cap stops reading even with a false length, the exact limit is accepted, malformed forms get a generic refusal, and missing configuration returns 503. |
 | `worker/sign-in.test.ts` | Wrapper policy in isolation with real token verification and runtime identity: all sign-in pass-list cases except bundle/install/count cases 7 to 9, plus algorithm restrictions, key rotation, configuration, concurrent identities, and downstream-call isolation. |
 | `worker/instance.test.ts` | Instance identity and unnamed refusal; authentication before policy; writable unset/empty/false and fail-closed flags; all 12 writing GET routes and their HEAD equivalents; downstream isolation and reads/assets during upgrades. |
 | `tests/instance.e2e.test.mjs` | Instance and upgrade policy through the real local Worker for staff and agent, plus an exact inventory of every live upstream GET route against the wrapper's read/write classification. Re-audit existing handlers and helpers when upstream changes them; the inventory catches new routes, not changed effects on an existing path. |
@@ -66,6 +72,12 @@ non-local Host case still connects only to `127.0.0.1`; the local entry returns
 `worker/sign-in.test.ts`'s `workers.dev` case: an address Access does not cover
 reaches the wrapper without a credential, gets 401, and calls neither app nor
 assets. The foreign-Host integration check proves only the local entry guard.
+
+The intake suite asks the harness to start a second `unstable_startWorker` on a
+separate loopback port. Both Workers use the same local persistence path and
+intake database ID. Wrangler applies the CRM and intake migrations from their
+own configurations. The intake Worker binds just `INTAKE_DB`. The harness uses
+Wrangler's installed Miniflare for direct D1 assertions and fixture setup.
 
 `tests/migration-helpers.mjs` is the migration suite's shared helper. Its scratch
 root is `wiser-crm-migration-tests/` under `TMPDIR`; it uses local Wrangler migrations and

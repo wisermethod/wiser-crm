@@ -1,5 +1,6 @@
 import { createLocalJWKSet } from "jose";
 import { signIn, type SignInDependencies } from "../sign-in.ts";
+import { takeIn } from "../take-in.ts";
 
 interface LocalEnvironment {
   WISER_LOCAL_DEV?: string;
@@ -20,7 +21,7 @@ function isLocal(request: Request, env: LocalEnvironment): boolean {
     && (hostname === "localhost" || hostname === "127.0.0.1");
 }
 
-type LocalApp<E, C> = Pick<SignInDependencies<E, C>, "appFetch" | "routePath">;
+type LocalApp<E, C> = Pick<SignInDependencies<E, C>, "appFetch" | "routePath" | "takeIn">;
 
 /** The injected app keeps tests on the same local guard and real sign-in path. */
 export async function localFetch<E extends LocalEnvironment, C>(
@@ -83,10 +84,12 @@ export async function localFetch<E extends LocalEnvironment, C>(
 }
 
 export default {
-  fetch(request: Request, env: LocalEnvironment & { DB: D1Database }, context: ExecutionContext): Promise<Response> {
+  fetch(request: Request, env: LocalEnvironment & { DB: D1Database; INTAKE_DB?: D1Database }, context: ExecutionContext): Promise<Response> {
     return localFetch(request, env, context, async () => {
       const { default: app } = await import("../../src/server/index.js");
+      const intake = env.INTAKE_DB;
       return {
+        takeIn: intake && (() => takeIn(env.DB, intake)),
         appFetch: (req, bindings, ctx) => app.fetch(req, bindings, ctx),
         routePath: (req) => app.getPath(req),
       };

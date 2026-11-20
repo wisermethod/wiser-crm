@@ -3,5 +3,5 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "runtime/**/*", "worker/**/*"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "runtime/**/*", "worker/**/*", "intake/**/*"]
 }

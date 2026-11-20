@@ -31,8 +31,72 @@ async function portClosed(port) {
   });
 }
 
+function migrate(t, config, directory, persist, database) {
+  const migrated = spawnSync(process.execPath, [wranglerCli, 'd1', 'migrations', 'apply',
+    database, '--config', config, '--local', '--persist-to', persist], {
+    cwd: directory, env: process.env, encoding: 'utf8', timeout: 120_000,
+  });
+  assert.ifError(migrated.error);
+  assert.equal(migrated.status, 0, `Local migration failed: ${migrated.stdout}${migrated.stderr}`);
+  t.diagnostic(`Wrangler d1 migrations apply --local ${database}: exit 0`);
+}
+
+async function startLocalWorker(t, config, directory, persist, bindings = {}) {
+  const worker = await unstable_startWorker({
+    config, envFiles: [], sendMetrics: false,
+    bindings,
+    dev: {
+      remote: false, persist, inspector: false, watch: false, liveReload: false,
+      logLevel: 'none', server: { hostname: '127.0.0.1', port: 0 },
+      registry: join(directory, 'registry'), generateTypes: false,
+    },
+  });
+  // Register teardown immediately, including when readiness or an assertion fails.
+  const ports = new Set();
+  t.after(async () => {
+    await worker.dispose();
+    for (const port of ports) {
+      assert.equal(await portClosed(port), true, `Worker still listens on ${port}`);
+      t.diagnostic(`127.0.0.1:${port} CLOSED after dispose`);
+    }
+  });
+  await worker.ready;
+  const url = await worker.url;
+  assert.equal(url.hostname, '127.0.0.1');
+  ports.add(Number(url.port));
+  // workerd and Wrangler may have additional internal listeners. Record those
+  // in the run's port audit rather than treating the public URL as every port.
+  await writeFile(join(directory, 'port.json'), JSON.stringify({ pid: process.pid, port: Number(url.port) }));
+  t.diagnostic(`Local Worker listening at 127.0.0.1:${url.port}`);
+  return url;
+}
+
+function requestLocal(url, method, path, { body, headers = {} } = {}) {
+  // http.request preserves a deliberate Host override while the TCP peer
+  // always remains 127.0.0.1; redirects are never followed.
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1', port: Number(url.port), method, path,
+      headers,
+      agent: false,
+    }, (response) => {
+      let text = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { text += chunk; });
+      response.on('end', () => {
+        let data;
+        try { data = JSON.parse(text); } catch { data = text; }
+        resolve({ status: response.statusCode, headers: response.headers, data });
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15_000, () => req.destroy(new Error(`Timed out: ${method} ${path}`)));
+    req.end(body);
+  });
+}
+
 /** Real local entry, real wrapper, real app and a fresh Wrangler-migrated D1. */
-export async function startApp(t, { vars = {}, release } = {}) {
+export async function startApp(t, { vars = {}, release, intake = false } = {}) {
   const directory = await mkdtemp(join(scratch, 'worker-'));
   const persist = join(directory, 'state');
   const keys = await generateKeyPair('RS256', { extractable: true });
@@ -77,43 +141,16 @@ export default worker;
 `);
   await writeFile(config, JSON.stringify({
     ...local, main: bootstrap, vars: { ...local.vars, ...vars },
-    d1_databases: local.d1_databases.map((db) => ({ ...db, migrations_dir: join(root, db.migrations_dir) })),
+    d1_databases: local.d1_databases
+      .filter((db) => intake || db.binding !== 'INTAKE_DB')
+      .map((db) => ({ ...db, migrations_dir: join(root, db.migrations_dir) })),
     assets: { ...local.assets, directory: assets },
     send_metrics: false,
   }));
-  const migrated = spawnSync(process.execPath, [wranglerCli, 'd1', 'migrations', 'apply',
-    'wiser-crm-db', '--config', config, '--local', '--persist-to', persist], {
-    cwd: directory, env: process.env, encoding: 'utf8', timeout: 120_000,
+  migrate(t, config, directory, persist, 'wiser-crm-db');
+  const url = await startLocalWorker(t, config, directory, persist, {
+    DEV_JWKS: { type: 'plain_text', value: JSON.stringify(jwks) },
   });
-  assert.ifError(migrated.error);
-  assert.equal(migrated.status, 0, `Local migration failed: ${migrated.stdout}${migrated.stderr}`);
-  t.diagnostic('Wrangler d1 migrations apply --local: exit 0');
-  const worker = await unstable_startWorker({
-    config, envFiles: [], sendMetrics: false,
-    bindings: { DEV_JWKS: { type: 'plain_text', value: JSON.stringify(jwks) } },
-    dev: {
-      remote: false, persist, inspector: false, watch: false, liveReload: false,
-      logLevel: 'none', server: { hostname: '127.0.0.1', port: 0 },
-      registry: join(directory, 'registry'), generateTypes: false,
-    },
-  });
-  // Register teardown immediately, including when readiness or an assertion fails.
-  const ports = new Set();
-  t.after(async () => {
-    await worker.dispose();
-    for (const port of ports) {
-      assert.equal(await portClosed(port), true, `Worker still listens on ${port}`);
-      t.diagnostic(`127.0.0.1:${port} CLOSED after dispose`);
-    }
-  });
-  await worker.ready;
-  const url = await worker.url;
-  assert.equal(url.hostname, '127.0.0.1');
-  ports.add(Number(url.port));
-  // workerd and Wrangler may have additional internal listeners. Record those
-  // in the run's port audit rather than treating the public URL as every port.
-  await writeFile(join(directory, 'port.json'), JSON.stringify({ pid: process.pid, port: Number(url.port) }));
-  t.diagnostic(`Local Worker listening at 127.0.0.1:${url.port}`);
 
   async function mint(claims = {}, privateKey = keys.privateKey, keyId = kid) {
     return new SignJWT({
@@ -126,27 +163,13 @@ export default worker;
   const agent = await mint({ sub: '', email: undefined, common_name: 'local-agent' });
   async function request(method, path, { token = person, body, headers = {} } = {}) {
     assert.ok(path.startsWith('/'), 'Requests must be local paths');
-    // http.request preserves a deliberate Host override while the TCP peer
-    // always remains 127.0.0.1; redirects are never followed.
-    return new Promise((resolve, reject) => {
-      const req = http.request({
-        hostname: '127.0.0.1', port: Number(url.port), method, path,
-        headers: { ...(token ? { 'Cf-Access-Jwt-Assertion': token } : {}),
-          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
-        agent: false,
-      }, (response) => {
-        let text = '';
-        response.setEncoding('utf8');
-        response.on('data', (chunk) => { text += chunk; });
-        response.on('end', () => {
-          let data;
-          try { data = JSON.parse(text); } catch { data = text; }
-          resolve({ status: response.statusCode, headers: response.headers, data });
-        });
-      });
-      req.on('error', reject);
-      req.setTimeout(15_000, () => req.destroy(new Error(`Timed out: ${method} ${path}`)));
-      req.end(body === undefined ? undefined : JSON.stringify(body));
+    return requestLocal(url, method, path, {
+      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: {
+        ...(token ? { 'Cf-Access-Jwt-Assertion': token } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...headers,
+      },
     });
   }
   async function api(method, path, status, options) {
@@ -161,5 +184,40 @@ export default worker;
     assert.ok(operation, `Live OpenAPI is missing ${method} ${path}`);
     return operation;
   }
-  return { directory, request, api, operation, openapi, mint, person, agent, kid };
+  const app = { directory, request, api, operation, openapi, mint, person, agent, kid };
+  if (!intake) return app;
+
+  const intakeDirectory = join(directory, 'intake');
+  await mkdir(intakeDirectory);
+  const intakeRoot = join(root, 'intake');
+  const intakeConfig = join(intakeDirectory, 'wrangler.json');
+  const intakeSettings = JSON.parse(await readFile(join(intakeRoot, 'wrangler.jsonc'), 'utf8'));
+  await writeFile(intakeConfig, JSON.stringify({
+    ...intakeSettings,
+    main: join(intakeRoot, intakeSettings.main),
+    d1_databases: intakeSettings.d1_databases.map((db) => ({
+      ...db, migrations_dir: join(intakeRoot, db.migrations_dir),
+    })),
+  }));
+  migrate(t, intakeConfig, intakeDirectory, persist, 'wiser-crm-intake-db');
+  const intakeUrl = await startLocalWorker(t, intakeConfig, intakeDirectory, persist);
+
+  // Give test setup and assertions D1 handles without a public inspection route.
+  // Use Wrangler's Miniflare dependency with metadata fetching explicitly off.
+  const { Miniflare } = createRequire(require.resolve('wrangler'))('miniflare');
+  const inspection = new Miniflare({
+    cf: false, script: '', modules: true, host: '127.0.0.1', port: 0,
+    defaultPersistRoot: join(persist, 'v3'),
+    d1Databases: Object.fromEntries(local.d1_databases.map((db) => [db.binding, db.database_id])),
+  });
+  t.after(() => inspection.dispose());
+  const crmDb = await inspection.getD1Database('DB');
+  const intakeDb = await inspection.getD1Database('INTAKE_DB');
+  return {
+    ...app, crmDb, intakeDb,
+    intakeRequest(method, path, options) {
+      assert.ok(path.startsWith('/'), 'Intake requests must be local paths');
+      return requestLocal(intakeUrl, method, path, options);
+    },
+  };
 }

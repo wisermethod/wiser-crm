@@ -9,6 +9,12 @@
       "database_name": "wiser-crm-db",
       "database_id": "local",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "INTAKE_DB",
+      "database_name": "wiser-crm-intake-db",
+      "database_id": "00000000-0000-0000-0000-000000000002",
+      "migrations_dir": "intake/migrations"
     }
   ],
   "assets": {

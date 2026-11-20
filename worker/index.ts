@@ -1,9 +1,11 @@
 import { createRemoteJWKSet } from "jose";
 import app from "../src/server/index.js";
 import { isConfigured, signIn, type SignInConfiguration } from "./sign-in.ts";
+import { takeIn } from "./take-in.ts";
 
 interface Environment {
   DB: D1Database;
+  INTAKE_DB?: D1Database;
   ASSETS: Fetcher;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -33,7 +35,9 @@ export default {
       audience: env.ACCESS_AUD,
       agentClientId: env.AGENT_CLIENT_ID,
     };
+    const intake = env.INTAKE_DB;
     return signIn(request, env, context, {
+      takeIn: intake && (() => takeIn(env.DB, intake)),
       appFetch: (req, bindings, ctx) => app.fetch(req, bindings, ctx),
       keySet: keySet(configuration),
       configuration,
