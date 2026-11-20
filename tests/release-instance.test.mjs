@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import test from 'node:test';
+import { checkRelease } from '../release/sign.mjs';
 import { startApp } from './local-worker.mjs';
 
 // Run against real build.mjs output, including both deterministic builds. The
 // ordinary suite can run without paying for a fresh clean-checkout install.
 for (const release of (process.env.WISER_TEST_RELEASES ?? '').split(',').filter(Boolean)) {
   test(`release manifest and embedded instance version: ${release}`, { timeout: 120_000 }, async t => {
-    const manifest = JSON.parse(await readFile(join(release, 'manifest.json'), 'utf8'));
+    const { manifest } = checkRelease(release);
     await t.test('manifest carries all five required variables and F1 remains 10', () => {
       const required = manifest.format === 3
         ? manifest.apps['wiser-crm'].vars.required : manifest.worker.vars_required;

@@ -39,7 +39,15 @@ function counts(taken_in, failed = 0, remaining = 0) {
 
 async function waitFor(check) {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const result = await check();
+    // The harness's Workers and this inspection client share one local
+    // database file, so a read can meet a write's lock. Poll again; any
+    // other error still fails the case.
+    let result;
+    try {
+      result = await check();
+    } catch (error) {
+      if (!/SQLITE_BUSY|database is locked|D1_ERROR/.test(String(error?.cause ?? error) + String(error))) throw error;
+    }
     if (result) return result;
     await delay(50);
   }

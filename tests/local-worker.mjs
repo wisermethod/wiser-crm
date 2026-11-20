@@ -111,7 +111,10 @@ export async function startApp(t, { vars = {}, release, intake = false, intakeVa
   let main = join(root, local.main);
   let assets = join(root, local.assets.directory);
   if (release) {
-    const manifest = JSON.parse(await readFile(join(release, 'manifest.json'), 'utf8'));
+    // The signer's checker refuses an unknown format and any path or digest
+    // that leaves the release, before anything here is unpacked.
+    const { checkRelease } = await import('../release/sign.mjs');
+    const { manifest } = checkRelease(release);
     const { worker, assets: releaseAssets } = manifest.format === 3 ? manifest.apps['wiser-crm'] : manifest;
     const { createHash } = await import('node:crypto');
     async function unpack(record, destination) {

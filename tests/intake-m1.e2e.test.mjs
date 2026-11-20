@@ -35,7 +35,7 @@ function assertThrottled(response) {
   assert.equal(response.status, 429);
   assert.match(response.headers['content-type'], /^text\/plain/);
   assert.equal(response.headers['cache-control'], 'no-store');
-  assert.equal(typeof response.data, 'string');
+  assert.equal(response.data, 'Too many submissions.');
 }
 
 test('the intake config declares only its database and a single pinned structured mail binding', async () => {

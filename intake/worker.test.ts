@@ -100,8 +100,17 @@ test("required fields and malformed email receive a generic refusal", async () =
 test("missing intake configuration gives a fixed 503 without reading a request body", async () => {
   const { env, inserts } = database();
   for (const missing of ["INTAKE_DB", "INTAKE_ORIGIN", "INTAKE_RETURN_URL"] as const) {
-    const response = await worker.fetch(form("this must never be echoed"), { ...env, [missing]: undefined });
+    let pulls = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new TextEncoder().encode("this must never be echoed"));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    const response = await worker.fetch(form(body), { ...env, [missing]: undefined });
     assert.equal(response.status, 503);
+    assert.equal(pulls, 0);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(await response.text(), "Intake unavailable.");
   }

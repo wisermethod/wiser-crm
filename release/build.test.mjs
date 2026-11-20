@@ -206,10 +206,16 @@ test('format 3 lists the intake migration with its hash and content', t => {
   assert.deepEqual(fs.readFileSync(path.join(f.options.release, 'files', migration.sha256)), bytes);
 });
 
-test('assembly refuses an app source planted in the intake Wrangler bundle', t => {
+test('assembly refuses an app source named in the intake bundle inputs', t => {
   const f = assemblyFixture(t);
   f.options.intake.bundleInputs.unshift('src/server/index.ts');
-  f.write('intake-worker/worker.js', '// ../src/server/index.ts\nconst crm = 1;\n' + f.intakeSource);
   assert.throws(() => assemble(f.options), /intake bundle inputs/);
+  assert.equal(fs.existsSync(f.options.release), false);
+});
+
+test('assembly refuses an app source planted in the intake bundle bytes alone', t => {
+  const f = assemblyFixture(t);
+  f.write('intake-worker/worker.js', '// ../src/server/index.ts\nconst crm = 1;\n' + f.intakeSource);
+  assert.throws(() => assemble(f.options), /source sections/);
   assert.equal(fs.existsSync(f.options.release), false);
 });
