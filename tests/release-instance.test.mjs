@@ -10,7 +10,9 @@ for (const release of (process.env.WISER_TEST_RELEASES ?? '').split(',').filter(
   test(`release manifest and embedded instance version: ${release}`, { timeout: 120_000 }, async t => {
     const manifest = JSON.parse(await readFile(join(release, 'manifest.json'), 'utf8'));
     await t.test('manifest carries all five required variables and F1 remains 10', () => {
-      assert.deepEqual(manifest.worker.vars_required, ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY']);
+      const required = manifest.format === 3
+        ? manifest.apps['wiser-crm'].vars.required : manifest.worker.vars_required;
+      assert.deepEqual(required, ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY']);
       assert.deepEqual(manifest.source.f1, { count: 10, limit: 10 });
       assert.deepEqual(manifest.checks, { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' });
     });

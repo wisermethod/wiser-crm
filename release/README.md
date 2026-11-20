@@ -77,33 +77,42 @@ workflow list shows it as `disabled_manually`.
 
 ## Build a release of a commit
 
-The unsigned release contract is [FORMAT.md](FORMAT.md), format 2. Run the
+The unsigned release contract is [FORMAT.md](FORMAT.md), format 3. Run the
 builder from this fork, with its existing Node and pnpm tools available:
 
 ```sh
-node --test release/sign.test.mjs release/build.test.mjs release/clawnify-free.test.mjs
-TMPDIR=/absolute/scratch node release/build.mjs \
+node --test release/clawnify-free.test.mjs
+node --test release/build.test.mjs
+node --test release/sign.test.mjs
+node release/build.mjs \
   --commit <40-character-fork-commit> --version 0.1.0 \
   --out /absolute/output/outside-the-repository --f1-limit 10
 ```
 
 The builder clones with `--no-hardlinks`, checks out the commit detached and
 requires a clean tree. It installs the frozen lockfile into a new empty store
-and cache, runs the three S10 checks, builds both bundles, and counts
+and cache, runs the three S10 checks, builds both Workers and the CRM UI, and counts
 upstream files against `git merge-base <commit> clawnify/main` in this fork.
 That ref must already exist locally; the builder never fetches it. A safety
 preflight refuses scope registry dependencies before installation; it permits
 local `file:` stand-ins for control runs. Any failed check or excessive F1 count
 blocks assembly. An invalid argument or existing release destination is refused.
+For an offline proof, add `--offline-store /absolute/path/to/pnpm-store` to
+use cached, lockfile-pinned dependencies. The offline install skips lifecycle
+scripts and still writes a fresh install log and runs all three checks. The
+offline store must already contain the dependencies for this machine.
 
 Each run keeps its checkout, install NDJSON, check outputs, UI input record,
-Wrangler metadata, build logs and F1 list in a new `wiser-crm-build-*` directory
+both Wrangler metafiles, the combined Worker input record, build logs and F1 list in a new `wiser-crm-build-*` directory
 under `TMPDIR`. Its location is printed on stderr. Stores, caches, XDG state and
 Wrangler logs are isolated there; Wrangler metrics are disabled and its only
 deployment command is a dry run. Stdout contains one JSON result with the release
 directory, manifest digest, unique file count and bytes, check verdicts and F1
-count. The manifest records the built commit, configuration, modules, assets and
-every migration-directory file, each stored by content digest.
+count. The manifest records the commit, both apps' bindings and install input
+names, and each app's modules, assets when present, and numbered migrations.
+Their bytes share one content-addressed directory. Intake's pinned mail
+destination and sender are install values. Both Workers bind the same intake
+database, and the intake app owns its migrations.
 
 The result is `<out>/wiser-crm/<version>/manifest.json` and `files/`, with no
 `manifest.sig`. The builder never creates a signing key or a signature. The

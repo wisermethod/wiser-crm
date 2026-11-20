@@ -313,7 +313,9 @@ test('deliberately broken stop checks are caught by their tests', { skip: proces
   // Node otherwise treats the child --test process as recursive and runs no files.
   delete childEnv.NODE_TEST_CONTEXT;
   fs.writeFileSync(path.join(base, 'upstream-report.test.mjs'), tests);
-  fs.copyFileSync(fileURLToPath(new URL('./build.mjs', import.meta.url)), path.join(base, 'build.mjs'));
+  for (const module of ['build.mjs', 'format3.mjs', 'sign.mjs']) {
+    fs.copyFileSync(fileURLToPath(new URL(module, import.meta.url)), path.join(base, module));
+  }
   for (const [name, from, to, pattern] of controls) {
     assert.ok(source.includes(from), `mutation target: ${name}`);
     fs.writeFileSync(path.join(base, 'upstream-report.mjs'), source.replace(from, to));

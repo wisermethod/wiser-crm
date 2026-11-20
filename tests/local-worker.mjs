@@ -112,6 +112,7 @@ export async function startApp(t, { vars = {}, release, intake = false, intakeVa
   let assets = join(root, local.assets.directory);
   if (release) {
     const manifest = JSON.parse(await readFile(join(release, 'manifest.json'), 'utf8'));
+    const { worker, assets: releaseAssets } = manifest.format === 3 ? manifest.apps['wiser-crm'] : manifest;
     const { createHash } = await import('node:crypto');
     async function unpack(record, destination) {
       const bytes = await readFile(join(release, 'files', record.sha256));
@@ -120,9 +121,9 @@ export async function startApp(t, { vars = {}, release, intake = false, intakeVa
       await mkdir(dirname(destination), { recursive: true });
       await writeFile(destination, bytes);
     }
-    for (const record of manifest.worker.modules) await unpack(record, join(directory, 'modules', record.name));
-    for (const record of manifest.assets.files) await unpack(record, join(directory, 'assets', record.path.slice(1)));
-    main = join(directory, 'modules', manifest.worker.main_module);
+    for (const record of worker.modules) await unpack(record, join(directory, 'modules', record.name));
+    for (const record of releaseAssets.files) await unpack(record, join(directory, 'assets', record.path.slice(1)));
+    main = join(directory, 'modules', worker.main_module);
     assets = join(directory, 'assets');
   }
   // This installed Wrangler accepts dev.outboundService in its declarations

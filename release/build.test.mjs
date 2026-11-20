@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { argumentsFor, assemble, checkCommand, moduleType, noScopeRegistry, readConfig, runChecks, sha256 } from './build.mjs';
+import { checkRelease } from './sign.mjs';
 
 const repo = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const commit = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
@@ -78,32 +79,59 @@ function assemblyFixture(t) {
   f.write('worker/meta.json', '{}');
   f.write('assets/index.html', '<h1>fixture</h1>\n');
   f.write('assets/assets/app.js', 'export default {};\n'); // Cross-category dedup.
+  f.write('migrations/0001_baseline.sql', 'SELECT 1;\n');
   f.write('migrations/0010_later.sql', 'SELECT 10;\n');
   f.write('migrations/0002_next.sql', 'SELECT 2;\n');
   f.write('migrations/README.md', 'Migration instructions\n');
   f.write('migrations/adopt.mjs', '// adoption helper\n');
   const options = { release: path.join(f.base, 'out/wiser-crm/0.1.0'), version: '0.1.0', created: '2026-10-25T12:00:00.000Z', source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } }, checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' }, config: { main: 'worker/index.ts', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_databases: [{ binding: 'DB' }], assets: { binding: 'ASSETS', not_found_handling: 'single-page-application', run_worker_first: true }, vars: readConfig(path.join(repo, 'wrangler.wiser.jsonc')).vars }, workerDir: path.join(f.base, 'worker'), mainModule: 'index.js', assetsDir: path.join(f.base, 'assets'), migrationsDir: path.join(f.base, 'migrations'), table: 'd1_migrations' };
-  return { ...f, options };
+  const intakeSource = '// notice.ts\nconst notice = 1;\n// worker.ts\nexport default notice;\n';
+  f.write('intake-worker/worker.js', intakeSource);
+  f.write('intake-migrations/0001_intake.sql', 'SELECT 3;\n');
+  options.intake = {
+    config: readConfig(path.join(repo, 'intake/wrangler.jsonc')),
+    workerDir: path.join(f.base, 'intake-worker'),
+    mainModule: 'worker.js',
+    migrationsDir: path.join(f.base, 'intake-migrations'),
+    bundleInputs: ['intake/notice.ts', 'intake/worker.ts'],
+  };
+  return { ...f, options, intakeSource };
 }
 
-test('fixture matches FORMAT.md field for field, key order, exact bytes, hashes and sizes', t => {
+test('format 3 assembly matches FORMAT.md byte for byte and passes the checker', t => {
   const f = assemblyFixture(t), result = assemble(f.options);
   const ref = (name, text) => ({ name, sha256: sha256(Buffer.from(text)), size: Buffer.byteLength(text) });
   const module = (name, type, text) => { const { sha256, size } = ref(name, text); return { name, type, sha256, size }; };
   const asset = (name, content_type, text) => { const { sha256, size } = ref(name, text); return { path: name, sha256, size, content_type }; };
   const expected = {
-    format: 2, app: 'wiser-crm', version: '0.1.0', created: '2026-10-25T12:00:00.000Z',
+    format: 3, app: 'wiser-crm', version: '0.1.0', created: '2026-10-25T12:00:00.000Z',
     source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } },
     checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' },
-    worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_binding: 'DB', assets_binding: 'ASSETS', vars_required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
-    assets: { config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [asset('/assets/app.js', 'application/javascript', 'export default {};\n'), asset('/index.html', 'text/html; charset=utf-8', '<h1>fixture</h1>\n')] },
-    migrations: { table: 'd1_migrations', files: [ref('0002_next.sql', 'SELECT 2;\n'), ref('0010_later.sql', 'SELECT 10;\n')] },
+    apps: {
+      'wiser-crm': {
+        worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
+        assets: { binding: 'ASSETS', config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [asset('/assets/app.js', 'application/javascript', 'export default {};\n'), asset('/index.html', 'text/html; charset=utf-8', '<h1>fixture</h1>\n')] },
+        bindings: { d1: [{ name: 'DB', database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }], mail: [] },
+        vars: { required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], optional: [] },
+        migrations: { database: 'crm', table: 'd1_migrations', files: [ref('0001_baseline.sql', 'SELECT 1;\n'), ref('0002_next.sql', 'SELECT 2;\n'), ref('0010_later.sql', 'SELECT 10;\n')] },
+      },
+      'wiser-crm-intake': {
+        worker: { main_module: 'worker.js', compatibility_date: '2025-04-01', compatibility_flags: [], modules: [module('worker.js', 'application/javascript+module', f.intakeSource)], bundle_inputs: ['intake/notice.ts', 'intake/worker.ts'] },
+        assets: null,
+        bindings: { d1: [{ name: 'INTAKE_DB', database: 'intake' }], mail: [{ name: 'NOTICE', destination_var: 'NOTICE_TO', sender_var: 'NOTICE_FROM' }] },
+        vars: { required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', 'NOTICE_TO', 'NOTICE_FROM'], optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'] },
+        migrations: { database: 'intake', table: 'd1_migrations', files: [ref('0001_intake.sql', 'SELECT 3;\n')] },
+      },
+    },
   };
   const actualBytes = fs.readFileSync(path.join(f.options.release, 'manifest.json'));
   assert.equal(actualBytes.toString(), JSON.stringify(expected, null, 2) + '\n');
   assert.equal(result.manifest_sha256, sha256(actualBytes));
   assert.deepEqual(fs.readdirSync(f.options.release).sort(), ['files', 'manifest.json']);
-  const records = [...expected.worker.modules, ...expected.assets.files, ...expected.migrations.files];
+  assert.deepEqual(checkRelease(f.options.release).manifest, expected);
+  const records = Object.values(expected.apps).flatMap(app => [
+    ...app.worker.modules, ...(app.assets?.files ?? []), ...app.migrations.files,
+  ]);
   const hashes = [...new Set(records.map(file => file.sha256))].sort();
   assert.deepEqual(fs.readdirSync(path.join(f.options.release, 'files')).sort(), hashes);
   for (const file of records) {
@@ -165,5 +193,23 @@ test('an unnumbered migration file stops assembly; the README and helper are not
   const f = assemblyFixture(t);
   f.write('migrations/hotfix.sql', 'SELECT 1;\n');
   assert.throws(() => assemble(f.options), /unnumbered migration file: hotfix\.sql/);
+  assert.equal(fs.existsSync(f.options.release), false);
+});
+
+test('format 3 lists the intake migration with its hash and content', t => {
+  const f = assemblyFixture(t);
+  assemble(f.options);
+  const { manifest } = checkRelease(f.options.release);
+  const [migration] = manifest.apps['wiser-crm-intake'].migrations.files;
+  const bytes = fs.readFileSync(path.join(f.options.intake.migrationsDir, '0001_intake.sql'));
+  assert.deepEqual(migration, { name: '0001_intake.sql', sha256: sha256(bytes), size: bytes.length });
+  assert.deepEqual(fs.readFileSync(path.join(f.options.release, 'files', migration.sha256)), bytes);
+});
+
+test('assembly refuses an app source planted in the intake Wrangler bundle', t => {
+  const f = assemblyFixture(t);
+  f.options.intake.bundleInputs.unshift('src/server/index.ts');
+  f.write('intake-worker/worker.js', '// ../src/server/index.ts\nconst crm = 1;\n' + f.intakeSource);
+  assert.throws(() => assemble(f.options), /intake bundle inputs/);
   assert.equal(fs.existsSync(f.options.release), false);
 });

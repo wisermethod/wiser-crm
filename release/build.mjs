@@ -6,8 +6,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { checkRelease } from './sign.mjs';
+import { APPS, CRM, INTAKE, INTAKE_INPUT, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, checkIntakeInputs } from './format3.mjs';
 
-const APP = 'wiser-crm';
 const CHECKS = ['lockfile', 'install_log', 'bundle_inputs'];
 const LABELS = ['LOCKFILE', 'INSTALL-LOG', 'BUNDLE-INPUTS'];
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -42,7 +43,7 @@ export function argumentsFor(argv, repository) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
-    if (!['--commit', '--version', '--out', '--f1-limit'].includes(flag)) throw new Error(`unknown flag: ${flag}`);
+    if (!['--commit', '--version', '--out', '--f1-limit', '--offline-store'].includes(flag)) throw new Error(`unknown flag: ${flag}`);
     if (Object.hasOwn(flags, flag)) throw new Error(`duplicate flag: ${flag}`);
     if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`missing value: ${flag}`);
     flags[flag] = argv[++i];
@@ -51,7 +52,7 @@ export function argumentsFor(argv, repository) {
   if (!VERSION.test(flags['--version'] ?? '')) throw new Error('--version must be x.y.z without leading zeroes');
   if (!path.isAbsolute(flags['--out'] ?? '')) throw new Error('--out must be absolute');
   const out = destination(flags['--out']);
-  const release = destination(path.join(out, APP, flags['--version']));
+  const release = destination(path.join(out, CRM, flags['--version']));
   if (inside(out, repo) || inside(release, repo)) throw new Error('--out must be outside the repository');
   if (fs.existsSync(release)) throw new Error('release directory already exists');
   if (!/^(0|[1-9][0-9]*)$/.test(flags['--f1-limit'] ?? '') || !Number.isSafeInteger(Number(flags['--f1-limit']))) throw new Error('--f1-limit must be a nonnegative safe integer');
@@ -60,7 +61,13 @@ export function argumentsFor(argv, repository) {
   if (git(repo, ['rev-parse', '--verify', `${commit}^{commit}`]).trim() !== commit) throw new Error('--commit is not held by the fork');
   const tracked = git(repo, ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0').filter(Boolean);
   if (tracked.some(protectedPath)) throw new Error('commit contains a protected memory or .env path; refusing to copy it');
-  return { repo, commit, version: flags['--version'], out, release, f1Limit: Number(flags['--f1-limit']) };
+  let offlineStore;
+  if (Object.hasOwn(flags, '--offline-store')) {
+    if (!path.isAbsolute(flags['--offline-store'])) throw new Error('--offline-store must be absolute');
+    offlineStore = destination(flags['--offline-store']);
+    if (!fs.statSync(offlineStore).isDirectory() || inside(offlineStore, repo)) throw new Error('--offline-store must be an existing store outside the repository');
+  }
+  return { repo, commit, version: flags['--version'], out, release, f1Limit: Number(flags['--f1-limit']), offlineStore };
 }
 
 // All child stdout/stderr stays in evidence files; stdout of this CLI is one JSON object.
@@ -131,7 +138,7 @@ function filesUnder(root, prefix = '') {
     else if (stat.isFile()) files.push(relative);
     else throw new Error(`refusing nonregular release input: ${relative}`);
   }
-  return files;
+  return files.sort();
 }
 
 export function moduleType(name) {
@@ -145,13 +152,74 @@ function contentType(name) {
   return ({ '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.mjs': 'application/javascript', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.ico': 'image/x-icon', '.webp': 'image/webp', '.avif': 'image/avif', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.wasm': 'application/wasm' })[path.extname(name)] ?? 'application/octet-stream';
 }
 
-// Collect and validate everything before creating the destination. Used by the
-// CLI and small fixture tests; there is no CLI switch to bypass checks.
-export function assemble({ release, version, source, checks, config, workerDir, mainModule, assetsDir, migrationsDir, table, created = new Date().toISOString() }) {
+function collectModules(workerDir, mainModule, store) {
+  const names = filesUnder(workerDir).filter(name => name !== 'README.md' && name !== 'meta.json' && !name.endsWith('.map'));
+  if (!names.includes(mainModule)) throw new Error('main module missing from Wrangler output');
+  return names.map(name => ({ name, type: moduleType(name), ...store(path.join(workerDir, name)) }));
+}
+
+function collectMigrations(migrationsDir, store) {
+  const sqlFiles = filesUnder(migrationsDir).filter(name => name.endsWith('.sql'));
+  const stray = sqlFiles.filter(name => !MIGRATION_NAME.test(name));
+  if (stray.length) throw new Error(`unnumbered migration file: ${stray.join(', ')}`);
+  return sqlFiles.sort(compareMigrations).map(name => ({ name, ...store(path.join(migrationsDir, name)) }));
+}
+
+function application(app, { config, workerDir, mainModule, migrationsDir, table, assetsDir, bundleInputs }, store) {
+  const spec = APPS[app];
+  const intake = app === INTAKE;
+  const expectedVars = [...spec.required, ...spec.optional];
+  const vars = Object.keys(config.vars ?? {});
+  if (vars.length !== expectedVars.length || !expectedVars.every(name => vars.includes(name))) {
+    throw new Error(`unsupported release configuration: ${app} install variables`);
+  }
+  const [localD1] = config.d1_databases ?? [];
+  const localBinding = intake ? 'INTAKE_DB' : 'DB';
+  if (config.d1_databases?.length !== 1 || localD1?.binding !== localBinding || !config.compatibility_date) {
+    throw new Error(`unsupported release configuration: ${app} D1 binding or Worker date`);
+  }
+  const mail = config.send_email ?? [];
+  if (intake) {
+    if (config.assets || mail.length !== 1 || mail[0].name !== spec.mail[0].name
+      || !mail[0].destination_address || mail[0].destination_address !== config.vars.NOTICE_TO) {
+      throw new Error('unsupported release configuration: intake assets or pinned mail binding');
+    }
+    checkIntakeInputs(bundleInputs);
+  } else if (config.assets?.run_worker_first !== true || config.assets.binding !== 'ASSETS' || mail.length) {
+    throw new Error('unsupported release configuration: CRM assets or mail binding');
+  }
+  const worker = {
+    main_module: mainModule,
+    compatibility_date: config.compatibility_date,
+    compatibility_flags: config.compatibility_flags ?? [],
+    modules: collectModules(workerDir, mainModule, store),
+  };
+  if (intake) worker.bundle_inputs = bundleInputs;
+  return {
+    worker,
+    assets: intake ? null : {
+      binding: config.assets.binding,
+      config: {
+        html_handling: config.assets.html_handling ?? 'auto-trailing-slash',
+        not_found_handling: config.assets.not_found_handling ?? 'none',
+        run_worker_first: true,
+      },
+      files: filesUnder(assetsDir).map(name => ({
+        path: '/' + name, ...store(path.join(assetsDir, name)), content_type: contentType(name),
+      })),
+    },
+    bindings: { d1: spec.d1, mail: spec.mail },
+    vars: { required: spec.required, optional: spec.optional },
+    migrations: { database: spec.database, table, files: collectMigrations(migrationsDir, store) },
+  };
+}
+
+// Collect the bytes, write to an exclusive destination and run the same
+// validation as the signer. A failed check removes only this build's output.
+export function assemble({ release, version, source, checks, intake, created = new Date().toISOString(), ...crm }) {
   requirePass(checks);
   if (!SHA.test(source.commit) || !SHA.test(source.upstream_commit) || source.repository !== 'wisermethod/wiser-crm' || !Number.isSafeInteger(source.f1.count) || source.f1.count < 0 || !Number.isSafeInteger(source.f1.limit) || source.f1.count > source.f1.limit) throw new Error('invalid source provenance or F1 limit');
-  if (!VERSION.test(version) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error('invalid version or migration table');
-  if (config.assets?.run_worker_first !== true || config.d1_databases?.length !== 1 || !config.assets.binding || !config.compatibility_date) throw new Error('unsupported release configuration');
+  if (!VERSION.test(version)) throw new Error('invalid version');
   const stored = new Map();
   function store(file) {
     const bytes = fs.readFileSync(file);
@@ -159,91 +227,125 @@ export function assemble({ release, version, source, checks, config, workerDir, 
     stored.set(hash, bytes);
     return { sha256: hash, size: bytes.length };
   }
-  const safeName = name => /^[A-Za-z0-9_./-]+$/.test(name) && !name.includes('..') && name.split('/').every(part => part && part !== '.') && name !== 'metadata';
-  const moduleNames = filesUnder(workerDir).filter(name => name !== 'README.md' && name !== 'meta.json' && !name.endsWith('.map'));
-  if (!moduleNames.includes(mainModule)) throw new Error('main module missing from Wrangler output');
-  const modules = moduleNames.map(name => {
-    if (!safeName(name)) throw new Error('unsafe module name');
-    return { name, type: moduleType(name), ...store(path.join(workerDir, name)) };
-  });
-  const assets = filesUnder(assetsDir).map(name => {
-    if (!safeName(name)) throw new Error('unsafe asset path');
-    return { path: '/' + name, ...store(path.join(assetsDir, name)), content_type: contentType(name) };
-  });
-  // Only numbered SQL files are migrations, and filenames are their identity; the
-  // README and the adoption helper beside them are not carried. An unnumbered
-  // .sql file stops the build rather than being skipped or guessed at.
-  const sqlFiles = filesUnder(migrationsDir).filter(name => name.endsWith('.sql'));
-  const stray = sqlFiles.filter(name => !/^\d+_[A-Za-z0-9_-]+\.sql$/.test(name));
-  if (stray.length) throw new Error(`unnumbered migration file: ${stray.join(', ')}`);
-  const migrations = sqlFiles.sort((a, b) => {
-    const an = Number(/^(\d+)_/.exec(a)[1]), bn = Number(/^(\d+)_/.exec(b)[1]);
-    return an - bn || (a < b ? -1 : a > b ? 1 : 0);
-  }).map(name => {
-    if (!safeName(name)) throw new Error('unsafe migration name');
-    return { name, ...store(path.join(migrationsDir, name)) };
-  });
   const manifest = {
-    format: 2, app: APP, version, created,
+    format: 3, app: CRM, version, created,
     source: { repository: source.repository, commit: source.commit, upstream_commit: source.upstream_commit, f1: { count: source.f1.count, limit: source.f1.limit } },
     checks: Object.fromEntries(CHECKS.map(name => [name, checks[name]])),
-    worker: { main_module: mainModule, compatibility_date: config.compatibility_date, compatibility_flags: config.compatibility_flags ?? [], d1_binding: config.d1_databases[0].binding, assets_binding: config.assets.binding, vars_required: Object.keys(config.vars ?? {}), modules },
-    assets: { config: { html_handling: config.assets.html_handling ?? 'auto-trailing-slash', not_found_handling: config.assets.not_found_handling ?? 'none', run_worker_first: true }, files: assets },
-    migrations: { table, files: migrations },
+    apps: {
+      [CRM]: application(CRM, crm, store),
+      [INTAKE]: application(INTAKE, { ...intake, table: MIGRATION_TABLE }, store),
+    },
   };
   const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
   fs.mkdirSync(path.dirname(release), { recursive: true });
   fs.mkdirSync(release); // Exclusive; never merge into or remove somebody else's output.
+  let checked;
   try {
     fs.mkdirSync(path.join(release, 'files'));
     for (const [hash, contents] of stored) fs.writeFileSync(path.join(release, 'files', hash), contents, { flag: 'wx' });
     fs.writeFileSync(path.join(release, 'manifest.json'), bytes, { flag: 'wx' });
+    checked = checkRelease(release);
   } catch (e) {
     fs.rmSync(release, { recursive: true, force: true });
     throw e;
   }
-  return { release_directory: release, manifest_sha256: sha256(bytes), file_count: stored.size, total_bytes: [...stored.values()].reduce((n, bytes) => n + bytes.length, 0), checks: manifest.checks, count: source.f1.count };
+  return { release_directory: release, manifest_sha256: checked.manifestHash, file_count: checked.fileCount, total_bytes: checked.totalBytes, checks: manifest.checks, count: source.f1.count };
+}
+
+function workerOutput(configFile, workerDir) {
+  const dir = path.dirname(configFile);
+  const config = readConfig(configFile);
+  const meta = JSON.parse(fs.readFileSync(path.join(workerDir, 'meta.json'), 'utf8'));
+  const entries = Object.entries(meta.outputs ?? {}).filter(([name, value]) => value.entryPoint
+    && path.resolve(dir, value.entryPoint) === path.resolve(dir, config.main) && /\.m?js$/.test(name));
+  if (entries.length !== 1) throw new Error('Wrangler metadata must name exactly one Worker entry');
+  const [outfile, output] = entries[0];
+  const mainModule = path.relative(workerDir, path.resolve(dir, outfile)).split(path.sep).join('/');
+  const migrationsDir = path.resolve(dir, config.d1_databases[0].migrations_dir);
+  return { config, meta, output, workerDir, mainModule, migrationsDir };
+}
+
+function intakeBundleInputs(checkout, configFile, { meta, output }) {
+  const dir = path.dirname(configFile);
+  const inputs = Object.keys(meta.inputs ?? {});
+  const names = inputs.map(input => {
+    const file = path.resolve(dir, input);
+    const name = path.relative(checkout, file).split(path.sep).join('/');
+    if (!INTAKE_INPUT.test(name) || fs.realpathSync(file) !== file) throw new Error('release intake bundle inputs escaped intake source files');
+    return name;
+  }).sort();
+  checkIntakeInputs(names);
+  if (!Array.isArray(output.imports) || output.imports.length || !output.inputs
+    || inputs.length !== Object.keys(output.inputs).length
+    || !inputs.every(input => output.inputs[input]?.bytesInOutput > 0)) {
+    throw new Error('release intake bundle inputs must all contribute to one Worker with no module imports');
+  }
+  return names;
 }
 
 export function build(options) {
   const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wiser-crm-build-')));
   process.stderr.write(`build evidence: ${work}\n`);
   const checkout = path.join(work, 'checkout');
-  const dirs = Object.fromEntries(['store', 'cache', 'config', 'data', 'tmp', 'wrangler-logs', 'worker'].map(name => [name, path.join(work, name)]));
+  const dirs = Object.fromEntries(['store', 'cache', 'config', 'data', 'tmp', 'wrangler-logs', 'worker', 'intake'].map(name => [name, path.join(work, name)]));
   for (const dir of Object.values(dirs)) fs.mkdirSync(dir);
-  const env = { ...process.env, CI: 'true', TMPDIR: dirs.tmp, WRANGLER_SEND_METRICS: 'false', WRANGLER_LOG_PATH: dirs['wrangler-logs'], XDG_CACHE_HOME: dirs.cache, XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, npm_config_cache: dirs.cache, npm_config_cache_dir: dirs.cache, npm_config_store_dir: dirs.store };
+  const env = { ...process.env, CI: 'true', TMPDIR: dirs.tmp, WRANGLER_SEND_METRICS: 'false', CLOUDFLARE_CF_FETCH_ENABLED: 'false', CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: 'false', WRANGLER_LOG_PATH: dirs['wrangler-logs'], XDG_CACHE_HOME: dirs.cache, XDG_CONFIG_HOME: dirs.config, XDG_DATA_HOME: dirs.data, npm_config_cache: dirs.cache, npm_config_cache_dir: dirs.cache, npm_config_store_dir: dirs.store };
   const run = (program, args, name, cwd = checkout) => command(program, args, { cwd, env, log: path.join(work, name) });
   run('git', ['clone', '--no-hardlinks', '--no-checkout', '--', options.repo, checkout], 'clone.log', work);
   run('git', ['checkout', '--detach', options.commit], 'checkout.log');
   if (git(checkout, ['status', '--porcelain']).trim()) throw new Error('checkout is not clean');
   noScopeRegistry(checkout);
   if (fs.readdirSync(dirs.store).length || fs.readdirSync(dirs.cache).length) throw new Error('store and cache must start empty');
-  run('pnpm', ['--store-dir', dirs.store, `--config.cache-dir=${dirs.cache}`, '--registry=https://registry.npmjs.org', 'install', '--frozen-lockfile', '--reporter=ndjson'], 'install.ndjson');
+  const install = options.offlineStore
+    ? ['--offline', '--ignore-scripts', '--config.side-effects-cache=false']
+    : [];
+  run('pnpm', ['--store-dir', options.offlineStore ?? dirs.store, `--config.cache-dir=${dirs.cache}`, '--registry=https://registry.npmjs.org', 'install', '--frozen-lockfile', '--reporter=ndjson', ...install], 'install.ndjson');
   const checker = path.join(checkout, 'release/clawnify-free.mjs');
   const check = (i, args) => checkCommand(process.execPath, [checker, ...args], { cwd: checkout, env, log: path.join(work, `check-${CHECKS[i]}.log`) }, LABELS[i]);
+  const crmConfig = path.join(checkout, 'wrangler.wiser.jsonc');
+  const intakeConfig = path.join(checkout, 'intake/wrangler.jsonc');
+  const workerBuild = (config, outdir, log, extra = []) => run('pnpm', [
+    'exec', 'wrangler', 'deploy', '--dry-run', '--config', config, ...extra,
+    '--outdir', outdir, '--metafile', path.join(outdir, 'meta.json'),
+  ], log);
+  let crm, intake;
   return runChecks({
     lockfile: () => check(0, ['lockfile', checkout]),
     install_log: () => check(1, ['install-log', checkout, path.join(work, 'install.ndjson')]),
     bundle_inputs: () => {
       run(process.execPath, ['release/ui-inputs.mjs', path.join(work, 'ui-inputs.json')], 'ui-build.log');
-      run('pnpm', ['exec', 'wrangler', 'deploy', '--dry-run', '--config', 'wrangler.wiser.jsonc', '--define', `__WISER_RELEASE_VERSION__:${JSON.stringify(options.version)}`, '--outdir', dirs.worker, '--metafile', path.join(dirs.worker, 'meta.json')], 'worker-build.log');
-      return check(2, ['bundle-inputs', checkout, path.join(dirs.worker, 'meta.json'), path.join(work, 'ui-inputs.json')]);
+      workerBuild(crmConfig, dirs.worker, 'worker-build.log', ['--define', `__WISER_RELEASE_VERSION__:${JSON.stringify(options.version)}`]);
+      workerBuild(intakeConfig, dirs.intake, 'intake-build.log');
+      crm = workerOutput(crmConfig, dirs.worker);
+      intake = workerOutput(intakeConfig, dirs.intake);
+      intake.bundleInputs = intakeBundleInputs(checkout, intakeConfig, intake);
+      const workerInputs = { inputs: {
+        ...crm.meta.inputs,
+        ...Object.fromEntries(intake.bundleInputs.map(name => [name, {}])),
+      } };
+      const record = path.join(work, 'worker-inputs.json');
+      fs.writeFileSync(record, JSON.stringify(workerInputs, null, 2) + '\n', { flag: 'wx' });
+      return check(2, ['bundle-inputs', checkout, record, path.join(work, 'ui-inputs.json')]);
     },
   }, checks => {
     const upstream = git(options.repo, ['merge-base', options.commit, 'clawnify/main']).trim();
     const changed = git(options.repo, ['diff', '--name-only', '--no-renames', '--diff-filter=MD', '-z', upstream, options.commit]).split('\0').filter(Boolean);
     fs.writeFileSync(path.join(work, 'f1.json'), JSON.stringify({ commit: options.commit, upstream_commit: upstream, count: changed.length, limit: options.f1Limit, files: changed }, null, 2) + '\n', { flag: 'wx' });
     if (changed.length > options.f1Limit) throw new Error(`F1 count ${changed.length} exceeds limit ${options.f1Limit}`);
-    const config = readConfig(path.join(checkout, 'wrangler.wiser.jsonc'));
-    const meta = JSON.parse(fs.readFileSync(path.join(dirs.worker, 'meta.json'), 'utf8'));
-    const entries = Object.entries(meta.outputs ?? {}).filter(([name, value]) => value.entryPoint && path.resolve(checkout, value.entryPoint) === path.resolve(checkout, config.main) && /\.(m?js)$/.test(name));
-    if (entries.length !== 1) throw new Error('Wrangler metadata must name exactly one Worker entry');
-    const mainModule = path.relative(dirs.worker, path.resolve(checkout, entries[0][0])).split(path.sep).join('/');
-    const migrationsDir = path.resolve(checkout, config.d1_databases[0].migrations_dir);
-    if (!inside(migrationsDir, checkout)) throw new Error('migrations directory escapes checkout');
-    const table = /CREATE TABLE IF NOT EXISTS ([A-Za-z_][A-Za-z0-9_]*)\(/.exec(fs.readFileSync(path.join(migrationsDir, 'README.md'), 'utf8'))?.[1];
-    if (!table) throw new Error('migration table absent from migrations/README.md');
-    return assemble({ release: options.release, version: options.version, source: { repository: 'wisermethod/wiser-crm', commit: options.commit, upstream_commit: upstream, f1: { count: changed.length, limit: options.f1Limit } }, checks, config, workerDir: dirs.worker, mainModule, assetsDir: path.resolve(checkout, config.assets.directory), migrationsDir, table });
+    crm.assetsDir = path.resolve(checkout, crm.config.assets.directory);
+    if (![crm.assetsDir, crm.migrationsDir, intake.migrationsDir].every(dir => inside(fs.realpathSync(dir), checkout))) {
+      throw new Error('assets or migrations directory escapes checkout');
+    }
+    crm.table = /CREATE TABLE IF NOT EXISTS ([A-Za-z_][A-Za-z0-9_]*)\(/.exec(fs.readFileSync(path.join(crm.migrationsDir, 'README.md'), 'utf8'))?.[1];
+    if (!crm.table) throw new Error('migration table absent from migrations/README.md');
+    if (intake.config.d1_databases[0].migrations_table && intake.config.d1_databases[0].migrations_table !== MIGRATION_TABLE) {
+      throw new Error('intake migrations must use Wrangler default d1_migrations table');
+    }
+    return assemble({
+      ...crm, intake, release: options.release, version: options.version,
+      source: { repository: 'wisermethod/wiser-crm', commit: options.commit, upstream_commit: upstream, f1: { count: changed.length, limit: options.f1Limit } },
+      checks,
+    });
   });
 }
 

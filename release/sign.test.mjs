@@ -645,3 +645,88 @@ test('main refuses data buffered before startup without prompting', async t => {
   secretAbsent(out.text() + err.text(), f.seed);
   unchanged(f, before);
 });
+
+function format3Fixture(t) {
+  const f = fixture(t);
+  const { worker, assets, migrations, ...common } = f.manifest;
+  const { d1_binding, assets_binding, vars_required, modules, ...workerSettings } = worker;
+  const crm = {
+    worker: { ...workerSettings, modules },
+    assets: { binding: assets_binding, ...assets },
+    bindings: { d1: [{ name: d1_binding, database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }], mail: [] },
+    vars: { required: vars_required, optional: [] },
+    migrations: { database: 'crm', ...migrations },
+  };
+  const intake = {
+    worker: {
+      main_module: 'worker.js', compatibility_date: '2025-04-01', compatibility_flags: [],
+      modules: [{ name: 'worker.js', type: 'application/javascript+module', ...f.record('// worker.ts\nexport default {};\n') }],
+      bundle_inputs: ['intake/worker.ts'],
+    },
+    assets: null,
+    bindings: {
+      d1: [{ name: 'INTAKE_DB', database: 'intake' }],
+      mail: [{ name: 'NOTICE', destination_var: 'NOTICE_TO', sender_var: 'NOTICE_FROM' }],
+    },
+    vars: {
+      required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', 'NOTICE_TO', 'NOTICE_FROM'],
+      optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'],
+    },
+    migrations: { database: 'intake', table: 'd1_migrations', files: [{ name: '0001_intake.sql', ...f.record('SELECT 2;\n') }] },
+  };
+  const manifest = { ...common, format: 3, apps: { 'wiser-crm': crm, 'wiser-crm-intake': intake } };
+  const save = () => fs.writeFileSync(f.manifestFile, canonical(manifest));
+  save();
+  return { ...f, manifest, crm, intake, save };
+}
+
+test('format 2 fixture still verifies over its exact original bytes', async t => {
+  const f = fixture(t);
+  const bytes = fs.readFileSync(f.manifestFile);
+  const checked = checkRelease(f.release);
+  assert.deepEqual(checked.bytes, bytes);
+  await signRelease(f.release, f.seed, f.expected);
+  assert.deepEqual(fs.readFileSync(f.manifestFile), bytes);
+  assert.equal(await verifies(f, fs.readFileSync(path.join(f.release, 'manifest.sig')), bytes), true);
+});
+
+test('format 3 checker accepts both applications and summarizes each', t => {
+  const f = format3Fixture(t);
+  const checked = checkRelease(f.release);
+  assert.deepEqual(checked.bytes, Buffer.from(canonical(f.manifest)));
+  const summary = capture();
+  printSummary(checked, summary.output);
+  assert.match(summary.text(), /wiser-crm: 2 modules, 2 assets, 1 migrations/);
+  assert.match(summary.text(), /wiser-crm-intake: 1 modules, 0 assets, 1 migrations/);
+  assert.equal(fs.existsSync(path.join(f.release, 'manifest.sig')), false);
+});
+
+for (const [name, mutate, reason] of [
+  ['intake assets', f => { f.intake.assets = f.crm.assets; }, /intake.*must have no assets/],
+  ['mail destination embedded in the release', f => { f.intake.bindings.mail[0].destination_address = 'inbox@example.test'; }, /mail binding.*install input/],
+  ['literal mail sender inside a variable declaration', f => { f.intake.vars.required[3] = 'sender@example.test'; }, /required variable declarations/],
+  ['two mail bindings', f => { f.intake.bindings.mail.push({ ...f.intake.bindings.mail[0], name: 'OTHER' }); }, /at most one mail binding/],
+  ['missing intake mail binding', f => { f.intake.bindings.mail = []; }, /intake.*requires.*mail binding/],
+  ['migration digest mismatch', f => {
+    fs.writeFileSync(path.join(f.files, f.intake.migrations.files[0].sha256), 'SELECT 1;\n');
+  }, /migration.*digest/],
+  ['missing intake baseline', f => { f.intake.migrations.files = []; }, /baseline migration/],
+  ['missing required variable declaration', f => { f.intake.vars.required.shift(); }, /required variable declarations/],
+  ['CRM URL declared required', f => { f.intake.vars.required.push(f.intake.vars.optional.pop()); }, /required variable declarations/],
+  ['disagreeing intake database declarations', f => { f.crm.bindings.d1[1].database = 'other'; }, /shared intake database/],
+  ['migrations targeting the wrong database', f => { f.intake.migrations.database = 'crm'; }, /migration database/],
+  ['app module declared as an intake input', f => { f.intake.worker.bundle_inputs.unshift('src/server/index.ts'); }, /intake bundle inputs/],
+  ['app module in the hashed intake bytes despite a clean manifest input list', f => {
+    const module = f.intake.worker.modules[0];
+    fs.unlinkSync(path.join(f.files, module.sha256));
+    Object.assign(module, f.record('// ../src/server/index.ts\nconst crm = 1;\n// worker.ts\nexport default crm;\n'));
+  }, /intake bundle.*source sections/],
+  ['unknown format number', f => { f.manifest.format = 4; }, /unknown release format/],
+]) test(`format 3 refuses ${name} before signing`, async t => {
+  const f = format3Fixture(t);
+  mutate(f);
+  f.save();
+  const before = snapshot(f.base);
+  await assert.rejects(signRelease(f.release, f.seed, f.expected), reason);
+  unchanged(f, before);
+});

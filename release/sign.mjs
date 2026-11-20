@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPrivateKey, createPublicKey, sign, verify, webcrypto } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { APPS, CRM, INTAKE, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, sameList, checkIntakeInputs } from './format3.mjs';
 
-const APP = 'wiser-crm';
+const APP = CRM;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -55,8 +56,8 @@ function assetsConfig(config) {
     && ['none', '404-page', 'single-page-application'].includes(config.not_found_handling)
     && config.run_worker_first === true;
 }
-function checkedManifest(manifest, input) {
-  if (!orderedShape(manifest, ['format', 'app', 'version', 'created', 'source', 'checks', 'worker', 'assets', 'migrations']) || manifest.format !== 2) throw new Error('release manifest malformed');
+function checkHeader(manifest, input, tail) {
+  if (!orderedShape(manifest, ['format', 'app', 'version', 'created', 'source', 'checks', ...tail])) throw new Error('release manifest malformed');
   if (manifest.app !== input.app || manifest.version !== input.version) throw new Error('release names another version');
   if (!string(manifest.app, RELEASE_APP) || !string(manifest.version, RELEASE_VERSION)
     || !string(manifest.created, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/) || !Number.isFinite(Date.parse(manifest.created))
@@ -68,53 +69,144 @@ function checkedManifest(manifest, input) {
     || !Number.isSafeInteger(s.f1.limit) || s.f1.limit < 0 || s.f1.count > s.f1.limit) throw new Error('release source malformed');
   if (!orderedShape(manifest.checks, ['lockfile', 'install_log', 'bundle_inputs'])
     || !Object.values(manifest.checks).every((value) => value === 'PASS')) throw new Error('release checks malformed');
+}
+
+function workerFields(worker, keys) {
+  return orderedShape(worker, keys) && safePath(worker.main_module, false) && date(worker.compatibility_date)
+    && Array.isArray(worker.compatibility_flags) && worker.compatibility_flags.length <= 100
+    && worker.compatibility_flags.every(flag => string(flag, /^[a-z][a-z0-9_]{0,127}$/))
+    && new Set(worker.compatibility_flags).size === worker.compatibility_flags.length
+    && Array.isArray(worker.modules) && worker.modules.length > 0 && worker.modules.length <= 50;
+}
+
+function checkedManifest2(manifest, input) {
+  checkHeader(manifest, input, ['worker', 'assets', 'migrations']);
   const w = manifest.worker;
-  if (!orderedShape(w, ['main_module', 'compatibility_date', 'compatibility_flags', 'd1_binding', 'assets_binding', 'vars_required', 'modules'])
-    || !safePath(w.main_module, false) || !date(w.compatibility_date)
-    || !Array.isArray(w.compatibility_flags) || w.compatibility_flags.length > 100
-    || !w.compatibility_flags.every((flag) => string(flag, /^[a-z][a-z0-9_]{0,127}$/))
-    || new Set(w.compatibility_flags).size !== w.compatibility_flags.length
+  if (!workerFields(w, ['main_module', 'compatibility_date', 'compatibility_flags', 'd1_binding', 'assets_binding', 'vars_required', 'modules'])
     || !string(w.d1_binding, BINDING) || !string(w.assets_binding, BINDING) || w.d1_binding === w.assets_binding
     || !Array.isArray(w.vars_required) || !w.vars_required.every(plainName)
     || new Set(w.vars_required).size !== w.vars_required.length
-    || w.vars_required.includes(w.d1_binding) || w.vars_required.includes(w.assets_binding)
-    || !Array.isArray(w.modules) || !w.modules.length || w.modules.length > 50) throw new Error('release worker malformed');
+    || w.vars_required.includes(w.d1_binding) || w.vars_required.includes(w.assets_binding)) throw new Error('release worker malformed');
   const a = manifest.assets;
   if (!orderedShape(a, ['config', 'files']) || !assetsConfig(a.config) || !Array.isArray(a.files) || a.files.length > 20000) throw new Error('release assets malformed');
   const m = manifest.migrations;
   if (!orderedShape(m, ['table', 'files']) || !string(m.table, /^[A-Za-z_][A-Za-z0-9_]*$/)
     || !Array.isArray(m.files)) throw new Error('release migrations malformed');
-  const modules = new Set();
-  const paths = new Set();
-  const migrations = new Set();
+  const tracker = fileTracker();
+  tracker.add(w, a, m);
+  return { files: tracker.files };
+}
+
+function fileTracker() {
   const files = new Map();
   let total = 0;
-  for (const [items, kind] of [[w.modules, 'module'], [a.files, 'asset'], [m.files, 'migration']]) {
-    for (const file of items) {
-      const keys = kind === 'module' ? ['name', 'type', 'sha256', 'size']
-        : kind === 'asset' ? ['path', 'sha256', 'size', 'content_type'] : ['name', 'sha256', 'size'];
-      if (!orderedShape(file, keys) || !string(file.sha256, DIGEST) || !Number.isSafeInteger(file.size)
-        || file.size < 0 || file.size > MAX_FILE_BYTES) throw new Error(`release ${kind} malformed`);
-      if (kind === 'module') {
-        if (!safePath(file.name, false) || file.name === 'metadata' || modules.has(file.name)
-          || !Object.hasOwn(MODULE_TYPES, path.extname(file.name)) || MODULE_TYPES[path.extname(file.name)] !== file.type) throw new Error('release module malformed');
-        modules.add(file.name);
-      } else if (kind === 'asset') {
-        if (!safePath(file.path, true) || paths.has(file.path) || !mime(file.content_type)) throw new Error('release asset malformed');
-        paths.add(file.path);
-      } else {
-        if (!safePath(file.name, false) || !/^\d+_[A-Za-z0-9_-]+\.sql$/.test(file.name)
-          || migrations.has(file.name)) throw new Error('release migration malformed');
-        migrations.add(file.name);
+  return {
+    files,
+    add(worker, assets, migrations, format3 = false) {
+      for (const [records, kind] of [[worker.modules, 'module'], [assets?.files ?? [], 'asset'], [migrations.files, 'migration']]) {
+        const names = new Set();
+        let previous;
+        for (const file of records) {
+          const keys = kind === 'module' ? ['name', 'type', 'sha256', 'size']
+            : kind === 'asset' ? ['path', 'sha256', 'size', 'content_type'] : ['name', 'sha256', 'size'];
+          if (!orderedShape(file, keys) || !string(file.sha256, DIGEST) || !Number.isSafeInteger(file.size)
+            || file.size < 0 || file.size > MAX_FILE_BYTES) throw new Error(`release ${kind} malformed`);
+          const name = kind === 'asset' ? file.path : file.name;
+          if (!safePath(name, kind === 'asset') || names.has(name)) throw new Error(`release ${kind} malformed`);
+          if (kind === 'module' && (name === 'metadata' || !Object.hasOwn(MODULE_TYPES, path.extname(name))
+            || MODULE_TYPES[path.extname(name)] !== file.type)) throw new Error('release module malformed');
+          if (kind === 'asset' && !mime(file.content_type)) throw new Error('release asset malformed');
+          if (kind === 'migration' && !MIGRATION_NAME.test(name)) throw new Error('release migration malformed');
+          if (format3 && previous !== undefined && (kind === 'migration'
+            ? compareMigrations(previous, name) >= 0 : previous >= name)) throw new Error(`release ${kind} files out of order`);
+          previous = name;
+          names.add(name);
+          total += file.size;
+          if (total > MAX_TOTAL_BYTES) throw new Error('release exceeds 64 MiB total');
+          const prior = files.get(file.sha256);
+          if (prior && prior.size !== file.size) throw new Error('release hash has inconsistent sizes');
+          // Give migration corruption its own diagnostic, even for shared bytes.
+          if (!prior || kind === 'migration') files.set(file.sha256, { size: file.size, label: `${kind} ${name}` });
+        }
+        if (kind === 'module' && !names.has(worker.main_module)) throw new Error('release main module missing');
       }
-      total += file.size;
-      if (total > MAX_TOTAL_BYTES) throw new Error('release exceeds 64 MiB total');
-      if (files.has(file.sha256) && files.get(file.sha256).size !== file.size) throw new Error('release hash has inconsistent sizes');
-      files.set(file.sha256, file);
-    }
+    },
+  };
+}
+
+function checkBindings(app, entry, spec) {
+  const { bindings, vars } = entry;
+  if (!orderedShape(bindings, ['d1', 'mail'])) throw new Error(`release ${app} bindings malformed`);
+  if (!Array.isArray(bindings.d1) || bindings.d1.length !== spec.d1.length
+    || !spec.d1.every((expected, i) => {
+      const actual = bindings.d1[i];
+      return orderedShape(actual, ['name', 'database']) && actual.name === expected.name && actual.database === expected.database;
+    })) throw new Error(`release ${app} must declare its D1 bindings and the shared intake database`);
+  if (!Array.isArray(bindings.mail) || bindings.mail.length > 1) throw new Error(`release ${app} allows at most one mail binding`);
+  if (bindings.mail.length !== spec.mail.length) throw new Error(app === INTAKE
+    ? 'release intake requires the NOTICE mail binding' : 'release CRM must have no mail binding');
+  const [mail] = bindings.mail;
+  const [expected] = spec.mail;
+  if (expected && (!orderedShape(mail, ['name', 'destination_var', 'sender_var'])
+    || mail.name !== expected.name || mail.destination_var !== expected.destination_var || mail.sender_var !== expected.sender_var)) {
+    throw new Error('release intake mail binding must declare only its name and the destination and sender install input names');
   }
-  if (!modules.has(w.main_module)) throw new Error('release main module missing');
-  return { files: [...files.values()] };
+  if (!orderedShape(vars, ['required', 'optional']) || !sameList(vars.required, spec.required)) {
+    throw new Error(`release ${app} required variable declarations malformed`);
+  }
+  if (!sameList(vars.optional, spec.optional)) throw new Error(`release ${app} optional variable declarations malformed`);
+}
+
+function checkedManifest3(manifest, input) {
+  checkHeader(manifest, input, ['apps']);
+  if (!orderedShape(manifest.apps, [CRM, INTAKE])) throw new Error('release apps must contain wiser-crm and wiser-crm-intake in that order');
+  const tracker = fileTracker();
+  for (const [app, entry] of Object.entries(manifest.apps)) {
+    if (!orderedShape(entry, ['worker', 'assets', 'bindings', 'vars', 'migrations'])) throw new Error(`release ${app} entry malformed`);
+    const { worker, assets, migrations } = entry;
+    const intake = app === INTAKE;
+    const workerKeys = ['main_module', 'compatibility_date', 'compatibility_flags', 'modules'];
+    if (intake) workerKeys.push('bundle_inputs');
+    if (!workerFields(worker, workerKeys)) throw new Error(`release ${app} worker malformed`);
+    if (intake) {
+      if (assets !== null) throw new Error('release intake must have no assets');
+      if (worker.modules.length !== 1 || worker.modules[0]?.type !== MODULE_TYPES['.js']) {
+        throw new Error('release intake bundle must have one ECMAScript module');
+      }
+      checkIntakeInputs(worker.bundle_inputs);
+    } else if (!orderedShape(assets, ['binding', 'config', 'files']) || assets.binding !== 'ASSETS'
+      || !assetsConfig(assets.config) || !Array.isArray(assets.files) || assets.files.length < 1 || assets.files.length > 20000) {
+      throw new Error('release CRM assets malformed or missing ASSETS binding');
+    }
+    const spec = APPS[app];
+    checkBindings(app, entry, spec);
+    if (!orderedShape(migrations, ['database', 'table', 'files']) || migrations.database !== spec.database) {
+      throw new Error(`release ${app} migration database malformed`);
+    }
+    if (migrations.table !== MIGRATION_TABLE || !Array.isArray(migrations.files)) throw new Error(`release ${app} migrations malformed`);
+    if (migrations.files[0]?.name !== spec.baseline) throw new Error(`release ${app} baseline migration must be ${spec.baseline}`);
+    tracker.add(worker, assets, migrations, true);
+  }
+  const intake = manifest.apps[INTAKE].worker;
+  return { files: tracker.files, intake: { digest: intake.modules[0].sha256, inputs: intake.bundle_inputs } };
+}
+
+function checkedManifest(manifest, input) {
+  if (manifest?.format === 2) return checkedManifest2(manifest, input);
+  if (manifest?.format === 3) return checkedManifest3(manifest, input);
+  throw new Error('release manifest malformed: unknown release format');
+}
+
+function checkIntakeModule(contents, inputs) {
+  let source;
+  try { source = new TextDecoder('utf-8', { fatal: true }).decode(contents); }
+  catch { throw new Error('release intake bundle must be UTF-8'); }
+  // Wrangler/esbuild emits one unindented path comment per contributing source.
+  // Include paths that escape intake/ in the comparison so a clean manifest
+  // cannot hide an ordinary bundled app module.
+  const sections = [...source.matchAll(/^\/\/ ([^\r\n]+\.[A-Za-z0-9]+)\r?$/gm)]
+    .map(([, name]) => `intake/${name}`).sort();
+  if (!sameList(sections, inputs)) throw new Error('release intake bundle source sections do not match its intake input list');
 }
 
 function manifestBytes(release) {
@@ -147,7 +239,7 @@ export function checkRelease(dir) {
   catch { throw new Error('manifest.json must be valid JSON'); }
   if (!bytes.equals(Buffer.from(JSON.stringify(manifest, null, 2) + '\n'))) throw new Error('manifest.json must use canonical two-space JSON and a final LF');
   const valid = checkedManifest(manifest, { app: APP, version });
-  const referenced = new Map(valid.files.map(record => [record.sha256, record.size]));
+  const referenced = valid.files;
   const files = path.join(release, 'files');
   if (!fs.lstatSync(files).isDirectory()) throw new Error('files/ must be a real directory of regular files only');
   const names = fs.readdirSync(files).sort();
@@ -159,8 +251,11 @@ export function checkRelease(dir) {
   let totalBytes = 0;
   for (const name of names) {
     const contents = fs.readFileSync(path.join(files, name));
-    if (sha256(contents) !== name) throw new Error('file digest does not match its name');
-    if (contents.length !== referenced.get(name)) throw new Error('file size does not match its record');
+    const record = referenced.get(name);
+    const label = manifest.format === 3 ? `release ${record.label}` : 'file';
+    if (sha256(contents) !== name) throw new Error(`${label} digest does not match its name`);
+    if (contents.length !== record.size) throw new Error(`${label} size does not match its record`);
+    if (name === valid.intake?.digest) checkIntakeModule(contents, valid.intake.inputs);
     totalBytes += contents.length;
   }
   return { release, version, manifest, bytes, manifestHash: sha256(bytes), fileCount: names.length, totalBytes };
@@ -173,8 +268,10 @@ export function printSummary(checked, output = process.stderr) {
     `commit: ${manifest.source.commit}`, `upstream commit: ${manifest.source.upstream_commit}`,
     `F1: ${manifest.source.f1.count} / ${manifest.source.f1.limit}`,
     ...CHECKS.map(name => `${name}: ${manifest.checks[name]}`),
-    `modules: ${manifest.worker.modules.length}`, `assets: ${manifest.assets.files.length}`,
-    `migrations: ${manifest.migrations.files.length}`, `unique files: ${fileCount}`,
+    ...(manifest.format === 3
+      ? Object.entries(manifest.apps).map(([app, entry]) => `${app}: ${entry.worker.modules.length} modules, ${entry.assets?.files.length ?? 0} assets, ${entry.migrations.files.length} migrations`)
+      : [`modules: ${manifest.worker.modules.length}`, `assets: ${manifest.assets.files.length}`, `migrations: ${manifest.migrations.files.length}`]),
+    `unique files: ${fileCount}`,
     `total bytes: ${totalBytes}`, `manifest SHA-256: ${manifestHash}`,
   ].join('\n') + '\n');
 }
