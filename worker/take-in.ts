@@ -1,4 +1,4 @@
-import { eraseAgedSubmissions, eraseVisitorFields, retentionCutoff } from "../intake/submissions.ts";
+import { cleanIntake, completeSubmission } from "../intake/submissions.ts";
 
 export interface TakeInCounts {
   taken_in: number;
@@ -16,10 +16,14 @@ interface Submission {
   company: string;
   phone: string;
   message: string;
+  notice_outcome: string | null;
 }
 
 const unclaimed = "(claim_id IS NULL OR claimed_at IS NULL OR julianday(claimed_at) < julianday(?))";
-const pending = "taken_in_at IS NULL AND first_name <> ''";
+const pending = "taken_in_at IS NULL AND first_name IS NOT NULL";
+// Give the post time to record its send result. The same ten-minute grace as
+// a claim lets a saved lead progress even if the posting request died.
+const noticeReady = "(notice_outcome IS NOT NULL OR julianday(received_at) < julianday(?))";
 const submissionNote = `entity_type = 'contact' AND type = 'note'
   AND CASE WHEN json_valid(meta) THEN json_extract(meta, '$.intake_submission') END`;
 
@@ -65,7 +69,9 @@ async function writeNote(db: D1Database, submission: Submission): Promise<void> 
   ]);
   const contactId = crypto.randomUUID();
   const matchInputs = [JSON.stringify(observed), emailKey, email, first_name, contactId];
-  const body = `${message}\n\nCompany: ${company}\nPhone: ${phone}\nPage: ${page}`;
+  const failureCode = submission.notice_outcome?.startsWith("failed:") ? submission.notice_outcome.slice(7) : null;
+  const noticeLine = failureCode === null ? "" : `\nEmail notice was not sent (${failureCode}).`;
+  const body = `${message}\n\nCompany: ${company}\nPhone: ${phone}\nPage: ${page}${noticeLine}`;
   await db.batch([
     db.prepare(`${contactMatch}
       INSERT INTO contacts (id, first_name, last_name, email, phone, company_id, title, status)
@@ -92,21 +98,21 @@ export async function takeIn(
 ): Promise<TakeInCounts> {
   const now = clock();
   const timestamp = now.toISOString();
-  const claimExpiry = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
-  await intake.prepare(eraseAgedSubmissions).bind(retentionCutoff(now)).run();
+  const staleBefore = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+  await cleanIntake(intake, now);
   const queue = await intake.prepare(`
-    SELECT id FROM submissions WHERE ${pending} AND ${unclaimed}
+    SELECT id FROM submissions WHERE ${pending} AND ${unclaimed} AND ${noticeReady}
     ORDER BY julianday(received_at), id LIMIT 50
-  `).bind(claimExpiry).all<{ id: string }>();
+  `).bind(staleBefore, staleBefore).all<{ id: string }>();
   const counts = { taken_in: 0, failed: 0, remaining: 0 };
   for (const { id } of queue.results) {
     try {
       const claimId = crypto.randomUUID();
       const claim = await intake.prepare(`
         UPDATE submissions SET claimed_at = ?, claim_id = ?
-        WHERE id = ? AND ${pending} AND ${unclaimed}
-        RETURNING id, claim_id, page, first_name, last_name, email, company, phone, message
-      `).bind(timestamp, claimId, id, claimExpiry).all<Submission>();
+        WHERE id = ? AND ${pending} AND ${unclaimed} AND ${noticeReady}
+        RETURNING id, claim_id, page, first_name, last_name, email, company, phone, message, notice_outcome
+      `).bind(timestamp, claimId, id, staleBefore, staleBefore).all<Submission>();
       const submission = claim.results[0];
       if (claim.meta.changes !== 1 || submission?.claim_id !== claimId) continue;
 
@@ -120,11 +126,7 @@ export async function takeIn(
         continue;
       }
 
-      const receipt = await intake.prepare(`
-        UPDATE submissions
-        SET taken_in_at = ?, contact_id = ?, ${eraseVisitorFields}
-        WHERE id = ? AND claim_id = ? AND taken_in_at IS NULL
-      `).bind(timestamp, contactId, id, claimId).run();
+      const receipt = await intake.prepare(completeSubmission).bind(timestamp, contactId, id, claimId).run();
       if (receipt.meta.changes === 1) counts.taken_in++;
       else counts.failed++;
     } catch {

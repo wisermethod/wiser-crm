@@ -15,12 +15,17 @@ function database() {
       return {
         bind(...values: unknown[]) {
           return {
+            async first() { return "test-salt"; },
             async run() {
               if (sql.trimStart().startsWith("INSERT INTO submissions")) inserts.push(values);
+              return { meta: { changes: 1 } };
             },
           };
         },
       };
+    },
+    async batch(statements: { run(): Promise<unknown> }[]) {
+      return Promise.all(statements.map((statement) => statement.run()));
     },
   } as unknown as D1Database;
   return { inserts, env: { ...configured, INTAKE_DB: db } };

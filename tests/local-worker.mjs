@@ -96,7 +96,7 @@ function requestLocal(url, method, path, { body, headers = {} } = {}) {
 }
 
 /** Real local entry, real wrapper, real app and a fresh Wrangler-migrated D1. */
-export async function startApp(t, { vars = {}, release, intake = false } = {}) {
+export async function startApp(t, { vars = {}, release, intake = false, intakeVars = {} } = {}) {
   const directory = await mkdtemp(join(scratch, 'worker-'));
   const persist = join(directory, 'state');
   const keys = await generateKeyPair('RS256', { extractable: true });
@@ -195,6 +195,10 @@ export default worker;
   await writeFile(intakeConfig, JSON.stringify({
     ...intakeSettings,
     main: join(intakeRoot, intakeSettings.main),
+    vars: { ...intakeSettings.vars, ...intakeVars },
+    // Local integration tests never use a send_email binding. Handler unit
+    // tests inject a local stand-in when they need to observe a notice.
+    send_email: [],
     d1_databases: intakeSettings.d1_databases.map((db) => ({
       ...db, migrations_dir: join(intakeRoot, db.migrations_dir),
     })),

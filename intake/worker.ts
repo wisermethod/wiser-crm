@@ -1,6 +1,8 @@
-import { eraseAgedSubmissions, retentionCutoff } from "./submissions.ts";
+import { sendNotice, type NoticeSettings } from "./notice.ts";
+import { cleanIntake, recordNoticeOutcome, type NewSubmission } from "./submissions.ts";
+import { saveWithinThrottle, type ThrottleSettings } from "./throttle.ts";
 
-interface Environment {
+interface Environment extends NoticeSettings, ThrottleSettings {
   INTAKE_DB?: D1Database;
   INTAKE_ORIGIN?: string;
   INTAKE_RETURN_URL?: string;
@@ -61,11 +63,10 @@ export default {
     if (request.method !== "POST") return reply(405, "Method not allowed.", { Allow: "POST" });
 
     const { INTAKE_DB: db, INTAKE_ORIGIN: origin, INTAKE_RETURN_URL: returnUrl } = env;
-    if (!db || !origin || !returnUrl) return reply(503, "Intake unavailable.");
+    if (!db) return reply(503, "Intake unavailable.");
 
     try {
-      const now = new Date();
-      await db.prepare(eraseAgedSubmissions).bind(retentionCutoff(now)).run();
+      if (!origin || !returnUrl) return reply(503, "Intake unavailable.");
       if (request.headers.get("Origin") !== origin || origin === "null") return reply(403, "Origin refused.");
       const mediaType = request.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase();
       if (mediaType !== "application/x-www-form-urlencoded") return reply(415, "Unsupported form type.");
@@ -73,6 +74,11 @@ export default {
       const body = await readBody(request);
       if (body === null) return reply(413, "Form is too large.");
       const fields = new URLSearchParams(body);
+      // Build the response before saving so invalid configuration cannot
+      // accept a submission and then fail to redirect it.
+      const success = reply(303, null, { Location: returnUrl });
+      if (fields.getAll("website").some((value) => value !== "")) return success;
+
       const firstName = shortField(fields, "first_name");
       const email = shortField(fields, "email");
       const rawEmail = (fields.get("email") ?? "").trim();
@@ -83,20 +89,29 @@ export default {
         return reply(400, "Invalid form.");
       }
 
-      // Build the response before inserting so a malformed configured header
-      // cannot accept a submission and then return an error.
-      const success = reply(303, null, { Location: returnUrl });
-      await db.prepare(`
-        INSERT INTO submissions (id, received_at, page, first_name, last_name, email, company, phone, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).bind(
-        crypto.randomUUID(), now.toISOString(), referringPage(request.headers.get("Referer"), origin),
-        firstName, shortField(fields, "last_name"), email, shortField(fields, "company"),
-        shortField(fields, "phone"), message,
-      ).run();
+      const received = new Date();
+      const submission: NewSubmission = {
+        id: crypto.randomUUID(),
+        page: referringPage(request.headers.get("Referer"), origin),
+        firstName,
+        lastName: shortField(fields, "last_name"),
+        email,
+        company: shortField(fields, "company"),
+        phone: shortField(fields, "phone"),
+        message,
+      };
+      const saved = await saveWithinThrottle(db, env, submission, received, request.headers.get("CF-Connecting-IP"));
+      if (!saved) return reply(429, "Too many submissions.");
+
+      const outcome = await sendNotice(env, submission, received);
+      // The lead is durable. An outcome write failure must not invite a visitor
+      // retry after their lead was saved and the notice was already attempted.
+      await db.prepare(recordNoticeOutcome).bind(outcome, submission.id).run().catch(() => {});
       return success;
     } catch {
       return reply(503, "Intake unavailable.");
+    } finally {
+      await cleanIntake(db, new Date()).catch(() => {});
     }
   },
 };

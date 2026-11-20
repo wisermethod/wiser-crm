@@ -10,9 +10,20 @@
       "migrations_dir": "migrations"
     }
   ],
+  "send_email": [
+    {
+      "name": "NOTICE",
+      "destination_address": "crm-inbox@example.com"
+    }
+  ],
   "vars": {
-    "INTAKE_ORIGIN": "https://example.test",
-    "INTAKE_RETURN_URL": "https://example.test/thanks"
+    "INTAKE_ORIGIN": "https://example.com",
+    "INTAKE_RETURN_URL": "https://example.com/thanks",
+    "INTAKE_MAX_PER_ADDRESS_PER_DAY": "5",
+    "INTAKE_MAX_PER_HOUR": "60",
+    "NOTICE_TO": "crm-inbox@example.com",
+    "NOTICE_FROM": "notices@example.com",
+    "CRM_URL": "https://crm.example.com"
   },
   "send_metrics": false
 }

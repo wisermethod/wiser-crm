@@ -6,6 +6,7 @@ import { startApp } from './local-worker.mjs';
 
 const origin = 'https://example.test';
 const returnUrl = 'https://example.test/thanks';
+const intakeVars = { INTAKE_ORIGIN: origin, INTAKE_RETURN_URL: returnUrl };
 const takeInPath = '/api/wiser/intake/take-in';
 const contentType = 'application/x-www-form-urlencoded';
 const visitor = {
@@ -13,7 +14,7 @@ const visitor = {
   company: 'Analytical Engine', phone: '+1-202-555-0100', message: 'Please send details.',
 };
 const fields = Object.keys(visitor);
-const erased = Object.fromEntries(fields.map((field) => [field, '']));
+const erased = Object.fromEntries(fields.map((field) => [field, null]));
 const methods = ['GET', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS', 'POST'];
 const otherPaths = ['/', '/api/contacts', '/submit/', '/submit/x', '/llms.txt'];
 
@@ -46,7 +47,7 @@ async function waitFor(check) {
 }
 
 test('public intake and CRM take-in through two real local Workers', { timeout: 120_000 }, async (t) => {
-  const app = await startApp(t, { intake: true });
+  const app = await startApp(t, { intake: true, intakeVars });
   const { crmDb, intakeDb } = app;
   const submissions = () => all(intakeDb, 'submissions');
   const contacts = () => all(crmDb, 'contacts');
@@ -58,7 +59,8 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
 
   async function scenario(name, fn) {
     await t.test(name, async () => {
-      await intakeDb.prepare('DELETE FROM submissions').run();
+      await intakeDb.batch(['submissions', 'throttle', 'throttle_salts']
+        .map((table) => intakeDb.prepare(`DELETE FROM ${table}`)));
       await crmDb.batch(['activities', 'contacts', 'companies'].map((table) => crmDb.prepare(`DELETE FROM ${table}`)));
       await fn();
     });
@@ -127,6 +129,7 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
     const competingClaim = crypto.randomUUID();
     const now = new Date();
     const staleQueue = {
+      batch: (statements) => intakeDb.batch(statements),
       prepare(sql) {
         if (!sql.trimStart().startsWith('SELECT id FROM submissions')) return intakeDb.prepare(sql);
         return { bind: (...args) => ({ all: async () => {
@@ -372,7 +375,7 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
 });
 
 test('12: read-only CRM serves HTML and refuses take-in while intake keeps the submission', { timeout: 120_000 }, async (t) => {
-  const app = await startApp(t, { intake: true, vars: { WISER_READ_ONLY: 'true' } });
+  const app = await startApp(t, { intake: true, intakeVars, vars: { WISER_READ_ONLY: 'true' } });
   const response = await post(app);
   assert.equal(response.status, 303);
   const [before] = await all(app.intakeDb, 'submissions');

@@ -14,9 +14,13 @@ test('6: the public intake bundle excludes CRM modules and Hono and binds only i
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const configPath = join(root, 'intake/wrangler.jsonc');
   const config = JSON.parse(await readFile(configPath, 'utf8'));
-  const configFields = ['compatibility_date', 'compatibility_flags', 'd1_databases', 'main', 'name', 'send_metrics', 'vars'];
+  const configFields = ['compatibility_date', 'compatibility_flags', 'd1_databases', 'main', 'name', 'send_email', 'send_metrics', 'vars'];
   assert.deepEqual(Object.keys(config).filter((key) => !configFields.includes(key)), []);
-  assert.deepEqual(Object.keys(config.vars).sort(), ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL']);
+  assert.deepEqual(Object.keys(config.vars).sort(), [
+    'CRM_URL', 'INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'INTAKE_ORIGIN', 'INTAKE_RETURN_URL',
+    'NOTICE_FROM', 'NOTICE_TO',
+  ]);
+  assert.deepEqual(config.send_email, [{ name: 'NOTICE', destination_address: config.vars.NOTICE_TO }]);
   assert.deepEqual(config.d1_databases.map((db) => db.binding), ['INTAKE_DB']);
   const require = createRequire(import.meta.url);
   const wrangler = resolve(dirname(require.resolve('wrangler')), '../bin/wrangler.js');
