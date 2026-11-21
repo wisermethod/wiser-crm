@@ -85,10 +85,10 @@ function setup(t, errors = [], throttled = false) {
       },
     },
   };
-  function request(fields = visitor) {
+  function request(fields = visitor, referer = origin + "/contact?private=1") {
     return new Request(origin + "/submit", {
       method: "POST",
-      headers: { Origin: origin, Referer: origin + "/contact?private=1" },
+      headers: { Origin: origin, Referer: referer },
       body: new URLSearchParams(fields),
     });
   }
@@ -109,6 +109,44 @@ test("the notice is one structured send with exact UTC subject, body and only th
   const { env, request, sent, assertOutcome } = setup(t);
   assertRedirect(await worker.fetch(request(), env));
   assert.deepEqual(sent, [structuredNotice]);
+  assertOutcome("sent");
+});
+
+test("the form page is saved and printed in the notice when the Referer carries only the origin", async (t) => {
+  const { env, request, sent, inserted, assertOutcome } = setup(t);
+  assertRedirect(await worker.fetch(request({ ...visitor, page: "/contact" }, origin + "/"), env));
+  assert.deepEqual({ page: inserted[0][2], notices: sent }, { page: "/contact", notices: [structuredNotice] });
+  assertOutcome("sent");
+});
+
+for (const [shape, page] of [
+  ["absolute address", "https://evil.example/x"],
+  ["protocol-relative address", "//evil.example"],
+  ["line break", "/contact\nextra"],
+  ["200-character overflow", "/" + "x".repeat(200)],
+  ["query", "/contact?query=1"],
+  ["fragment", "/contact#form"],
+  ["backslash", "/contact\\extra"],
+  ["space", "/contact extra"],
+  ["non-ASCII", "/contáct"],
+]) {
+  test(`an invalid page (${shape}) falls back to the Referer path in storage and in the notice`, async (t) => {
+    const { env, request, sent, inserted, assertOutcome } = setup(t);
+    assertRedirect(await worker.fetch(request({ ...visitor, page }), env));
+    assert.equal(inserted[0][2], "/contact");
+    assert.deepEqual(sent, [structuredNotice]);
+    assertOutcome("sent");
+  });
+}
+
+test("a 200-character page is accepted as sent, including percent escapes", async (t) => {
+  const prefix = "/legal%20pages/";
+  const page = prefix + "x".repeat(200 - prefix.length);
+  const { env, request, sent, inserted, assertOutcome } = setup(t);
+  assert.equal(page.length, 200);
+  assertRedirect(await worker.fetch(request({ ...visitor, page }, origin + "/"), env));
+  assert.equal(inserted[0][2], page);
+  assert.equal(sent[0].text.split("\n", 1)[0], `New enquiry from ${page}`);
   assertOutcome("sent");
 });
 

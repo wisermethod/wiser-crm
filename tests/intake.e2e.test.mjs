@@ -107,6 +107,17 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
     assert.deepEqual(visitorFields(after), erased);
   });
 
+  await scenario('a cross-origin form supplies the page stored in D1 and used in the CRM note', async () => {
+    const response = await post(app, { ...visitor, page: '/contact' }, { headers: { Referer: origin + '/' } });
+    assert.equal(response.status, 303);
+    assert.equal(response.headers.location, returnUrl);
+    const [row] = await submissions();
+    assert.equal(row.page, '/contact');
+    assert.deepEqual(await run(), counts(1));
+    const [note] = await notes();
+    assert.match(note.body, /\nPage: \/contact$/);
+  });
+
   await scenario('2: two submissions from one visitor become one contact and two notes', async () => {
     assert.equal((await post(app)).status, 303);
     assert.equal((await post(app, { ...visitor, first_name: ' ada ', email: ' ADA@EXAMPLE.TEST ', message: 'Follow-up.' })).status, 303);

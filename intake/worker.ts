@@ -47,6 +47,12 @@ function shortField(fields: URLSearchParams, name: string): string {
   return trimAndCap((fields.get(name) ?? "").replace(controls, ""), 200);
 }
 
+function submittedPage(page: string | null): string | null {
+  if (!page || page.length > 200 || !page.startsWith("/") || page.startsWith("//")
+    || /[^\x21-\x7e]|[\\?#]/.test(page)) return null;
+  return page;
+}
+
 function referringPage(referer: string | null, origin: string): string {
   if (!referer) return "";
   try {
@@ -92,7 +98,8 @@ export default {
       const received = new Date();
       const submission: NewSubmission = {
         id: crypto.randomUUID(),
-        page: referringPage(request.headers.get("Referer"), origin),
+        // Alongside the six visitor fields, the form carries its own page path.
+        page: submittedPage(fields.get("page")) ?? referringPage(request.headers.get("Referer"), origin),
         firstName,
         lastName: shortField(fields, "last_name"),
         email,
