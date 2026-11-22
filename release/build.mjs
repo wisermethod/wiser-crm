@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkRelease } from './sign.mjs';
-import { APPS, BRAND_OPTIONAL_VARS, CRM, INTAKE, INTAKE_INPUT, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, checkIntakeInputs } from './format3.mjs';
+import { APPS, RELEASE_VARIABLES, CRM, INTAKE, INTAKE_INPUT, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, checkIntakeInputs } from './format3.mjs';
 
 const CHECKS = ['lockfile', 'install_log', 'bundle_inputs'];
 const LABELS = ['LOCKFILE', 'INSTALL-LOG', 'BUNDLE-INPUTS'];
@@ -168,10 +168,10 @@ function collectMigrations(migrationsDir, store) {
 function application(app, { config, workerDir, mainModule, migrationsDir, table, assetsDir, bundleInputs }, store) {
   const spec = APPS[app];
   const intake = app === INTAKE;
-  const optional = BRAND_OPTIONAL_VARS[app];
-  const expectedVars = [...spec.required, ...optional];
-  const vars = Object.keys(config.vars ?? {});
-  if (vars.length !== expectedVars.length || !expectedVars.every(name => vars.includes(name))) {
+  const vars = RELEASE_VARIABLES[app];
+  const expectedVars = [...vars.required, ...vars.optional];
+  const configuredVars = Object.keys(config.vars ?? {});
+  if (configuredVars.length !== expectedVars.length || !expectedVars.every(name => configuredVars.includes(name))) {
     throw new Error(`unsupported release configuration: ${app} install variables`);
   }
   const [localD1] = config.d1_databases ?? [];
@@ -210,7 +210,7 @@ function application(app, { config, workerDir, mainModule, migrationsDir, table,
       })),
     },
     bindings: { d1: spec.d1, mail: spec.mail },
-    vars: { required: spec.required, optional },
+    vars,
     migrations: { database: spec.database, table, files: collectMigrations(migrationsDir, store) },
   };
 }

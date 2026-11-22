@@ -1,0 +1,25 @@
+{
+  "wiser-crm": {
+    "required": [
+      "ACCESS_TEAM_DOMAIN",
+      "ACCESS_AUD",
+      "AGENT_CLIENT_ID",
+      "WISER_INSTANCE",
+      "WISER_READ_ONLY"
+    ],
+    "optional": []
+  },
+  "wiser-crm-intake": {
+    "required": [
+      "INTAKE_ORIGIN",
+      "INTAKE_RETURN_URL",
+      "NOTICE_TO",
+      "NOTICE_FROM"
+    ],
+    "optional": [
+      "INTAKE_MAX_PER_ADDRESS_PER_DAY",
+      "INTAKE_MAX_PER_HOUR",
+      "CRM_URL"
+    ]
+  }
+}

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash, generateKeyPairSync, webcrypto } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -10,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { checkRelease, keyFromSeed, printResult, printSummary, readHidden, signRelease } from './sign.mjs';
 import * as signing from './sign.mjs';
+import { format2Fixture, format3Fixture as unsignedFormat3Fixture } from '../tests/fixtures/release-manifests.mjs';
 
 const signer = fileURLToPath(new URL('./sign.mjs', import.meta.url));
 const keyFile = fileURLToPath(new URL('./key.json', import.meta.url));
@@ -23,35 +23,7 @@ function throwaway() {
 }
 
 function fixture(t) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wiser-crm-sign-test-')));
-  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
-  const release = path.join(base, 'wiser-crm', '0.1.0');
-  const files = path.join(release, 'files');
-  fs.mkdirSync(files, { recursive: true });
-  function record(bytes) {
-    const sha256 = hash(bytes);
-    fs.writeFileSync(path.join(files, sha256), bytes);
-    return { sha256, size: Buffer.byteLength(bytes) };
-  }
-  const shared = record('export default {};\n');
-  const manifest = {
-    format: 2, app: 'wiser-crm', version: '0.1.0', created: '2026-10-30T12:00:00.000Z',
-    source: { repository: 'wisermethod/wiser-crm', commit: 'a'.repeat(40), upstream_commit: 'b'.repeat(40), f1: { count: 10, limit: 10 } },
-    checks: { lockfile: 'PASS', install_log: 'PASS', bundle_inputs: 'PASS' },
-    worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], d1_binding: 'DB', assets_binding: 'ASSETS', vars_required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], modules: [
-      { name: 'data.bin', type: 'application/octet-stream', ...record(Buffer.from([0, 1, 255])) },
-      { name: 'index.js', type: 'application/javascript+module', ...shared },
-    ] },
-    assets: { config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [
-      { path: '/app.js', ...shared, content_type: 'application/javascript' },
-      { path: '/index.html', ...record('<h1>fixture</h1>\n'), content_type: 'text/html; charset=utf-8' },
-    ] },
-    migrations: { table: 'd1_migrations', files: [{ name: '0001_baseline.sql', ...record('SELECT 1;\n') }] },
-  };
-  const manifestFile = path.join(release, 'manifest.json');
-  const save = () => fs.writeFileSync(manifestFile, canonical(manifest));
-  save();
-  return { base, release, files, manifestFile, manifest, save, record, ...throwaway() };
+  return { ...format2Fixture(t), ...throwaway() };
 }
 
 // Record links themselves, never follow them, and include empty directories.
@@ -647,37 +619,7 @@ test('main refuses data buffered before startup without prompting', async t => {
 });
 
 function format3Fixture(t) {
-  const f = fixture(t);
-  const { worker, assets, migrations, ...common } = f.manifest;
-  const { d1_binding, assets_binding, vars_required, modules, ...workerSettings } = worker;
-  const crm = {
-    worker: { ...workerSettings, modules },
-    assets: { binding: assets_binding, ...assets },
-    bindings: { d1: [{ name: d1_binding, database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }], mail: [] },
-    vars: { required: vars_required, optional: [] },
-    migrations: { database: 'crm', ...migrations },
-  };
-  const intake = {
-    worker: {
-      main_module: 'worker.js', compatibility_date: '2025-04-01', compatibility_flags: [],
-      modules: [{ name: 'worker.js', type: 'application/javascript+module', ...f.record('// worker.ts\nexport default {};\n') }],
-      bundle_inputs: ['intake/worker.ts'],
-    },
-    assets: null,
-    bindings: {
-      d1: [{ name: 'INTAKE_DB', database: 'intake' }],
-      mail: [{ name: 'NOTICE', destination_var: 'NOTICE_TO', sender_var: 'NOTICE_FROM' }],
-    },
-    vars: {
-      required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', 'NOTICE_TO', 'NOTICE_FROM'],
-      optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'],
-    },
-    migrations: { database: 'intake', table: 'd1_migrations', files: [{ name: '0001_intake.sql', ...f.record('SELECT 2;\n') }] },
-  };
-  const manifest = { ...common, format: 3, apps: { 'wiser-crm': crm, 'wiser-crm-intake': intake } };
-  const save = () => fs.writeFileSync(f.manifestFile, canonical(manifest));
-  save();
-  return { ...f, manifest, crm, intake, save };
+  return { ...unsignedFormat3Fixture(t), ...throwaway() };
 }
 
 test('format 2 fixture still verifies over its exact original bytes', async t => {
@@ -690,7 +632,7 @@ test('format 2 fixture still verifies over its exact original bytes', async t =>
   assert.equal(await verifies(f, fs.readFileSync(path.join(f.release, 'manifest.sig')), bytes), true);
 });
 
-test('format 3 checker accepts both applications and summarizes each', t => {
+test('format 3 checker accepts the published 0.2.0 set and summarizes both applications', t => {
   const f = format3Fixture(t);
   const checked = checkRelease(f.release);
   assert.deepEqual(checked.bytes, Buffer.from(canonical(f.manifest)));
@@ -701,7 +643,23 @@ test('format 3 checker accepts both applications and summarizes each', t => {
   assert.equal(fs.existsSync(path.join(f.release, 'manifest.sig')), false);
 });
 
+function useNewOptionalLists(f) {
+  f.crm.vars.optional = ['BRAND_NAME', 'BRAND_ACCENT'];
+  f.intake.vars.optional.push('NOTICE_FROM_NAME');
+}
+
+test('format 3 checker accepts the 0.3.0 variable set', t => {
+  const f = unsignedFormat3Fixture(t, '0.3.0');
+  f.crm.vars.required.push('OWNER_EMAIL');
+  useNewOptionalLists(f);
+  f.save();
+  assert.deepEqual(checkRelease(f.release).bytes, Buffer.from(canonical(f.manifest)));
+});
+
 for (const [name, mutate, reason] of [
+  ['older optional lists with OWNER_EMAIL required', f => { f.crm.vars.required.push('OWNER_EMAIL'); }, /optional variable declarations/],
+  ['newer optional lists without OWNER_EMAIL required', useNewOptionalLists, /optional variable declarations/],
+  ['OWNER_EMAIL required for intake', f => { f.intake.vars.required.push('OWNER_EMAIL'); }, /required variable declarations/],
   ['intake assets', f => { f.intake.assets = f.crm.assets; }, /intake.*must have no assets/],
   ['mail destination embedded in the release', f => { f.intake.bindings.mail[0].destination_address = 'inbox@example.test'; }, /mail binding.*install input/],
   ['literal mail sender inside a variable declaration', f => { f.intake.vars.required[3] = 'sender@example.test'; }, /required variable declarations/],

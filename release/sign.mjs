@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPrivateKey, createPublicKey, sign, verify, webcrypto } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { APPS, OPTIONAL_VARIABLE_SETS, CRM, INTAKE, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, sameList, checkIntakeInputs } from './format3.mjs';
+import { APPS, VARIABLE_SETS, CRM, INTAKE, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, sameList, checkIntakeInputs } from './format3.mjs';
 
 const APP = CRM;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -135,7 +135,7 @@ function fileTracker() {
 }
 
 function checkBindings(app, entry, spec) {
-  const { bindings, vars } = entry;
+  const { bindings } = entry;
   if (!orderedShape(bindings, ['d1', 'mail'])) throw new Error(`release ${app} bindings malformed`);
   if (!Array.isArray(bindings.d1) || bindings.d1.length !== spec.d1.length
     || !spec.d1.every((expected, i) => {
@@ -150,9 +150,6 @@ function checkBindings(app, entry, spec) {
   if (expected && (!orderedShape(mail, ['name', 'destination_var', 'sender_var'])
     || mail.name !== expected.name || mail.destination_var !== expected.destination_var || mail.sender_var !== expected.sender_var)) {
     throw new Error('release intake mail binding must declare only its name and the destination and sender install input names');
-  }
-  if (!orderedShape(vars, ['required', 'optional']) || !sameList(vars.required, spec.required)) {
-    throw new Error(`release ${app} required variable declarations malformed`);
   }
 }
 
@@ -179,6 +176,9 @@ function checkedManifest3(manifest, input) {
     }
     const spec = APPS[app];
     checkBindings(app, entry, spec);
+    if (!orderedShape(entry.vars, ['required', 'optional'])) {
+      throw new Error(`release ${app} variable declarations malformed`);
+    }
     if (!orderedShape(migrations, ['database', 'table', 'files']) || migrations.database !== spec.database) {
       throw new Error(`release ${app} migration database malformed`);
     }
@@ -186,8 +186,12 @@ function checkedManifest3(manifest, input) {
     if (migrations.files[0]?.name !== spec.baseline) throw new Error(`release ${app} baseline migration must be ${spec.baseline}`);
     tracker.add(worker, assets, migrations, true);
   }
-  if (!OPTIONAL_VARIABLE_SETS.some(set => [CRM, INTAKE].every(app => sameList(manifest.apps[app].vars.optional, set[app])))) {
-    throw new Error('release optional variable declarations must match one complete format 3 set');
+  const apps = [CRM, INTAKE];
+  const requiredSets = VARIABLE_SETS.filter(set =>
+    apps.every(app => sameList(manifest.apps[app].vars.required, set[app].required)));
+  if (!requiredSets.length) throw new Error('release required variable declarations malformed');
+  if (!requiredSets.some(set => apps.every(app => sameList(manifest.apps[app].vars.optional, set[app].optional)))) {
+    throw new Error('release optional variable declarations must match the required declarations in one complete format 3 set');
   }
   const intake = manifest.apps[INTAKE].worker;
   return { files: tracker.files, intake: { digest: intake.modules[0].sha256, inputs: intake.bundle_inputs } };

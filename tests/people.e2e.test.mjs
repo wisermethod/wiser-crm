@@ -10,7 +10,7 @@ const applicant = 'waiting@example.test';
 const member = 'member@example.test';
 const viewer = 'viewer@example.test';
 const browser = { Accept: 'text/html,application/xhtml+xml' };
-const viewerError = 'Viewers can only read the CRM.';
+const viewerError = 'You have view-only access. Ask an owner if you need to make changes.';
 const peopleError = 'Only an owner can change people.';
 const contactInput = { first_name: 'Mary', last_name: 'Jackson', title: 'Engineer' };
 const appOptions = { inspect: true };
@@ -29,7 +29,7 @@ async function waiting(app, token, method = 'GET') {
   assert.equal(response.status, 403, `waiting page status: ${JSON.stringify(response.data)}`);
   assert.equal(response.headers['cache-control'], 'no-store');
   assert.match(response.headers['content-type'], /^text\/html/);
-  if (method === 'GET') assert.match(response.data, /<h1>Waiting for access<\/h1>/);
+  if (method === 'GET') assert.match(response.data, /<h1>You're signed in, but not set up yet<\/h1>/);
   else assert.equal(response.data, '');
 }
 
@@ -352,7 +352,7 @@ scenario(15, 'first owner cannot be demoted, removed or duplicated by a stored r
   await app.crmDb.prepare("INSERT INTO wiser_people (email, role, added_by) VALUES (?, 'viewer', ?)").bind(owner, owner).run();
   const address = personPath(owner.toUpperCase());
   for (const method of ['PUT', 'DELETE']) await refused(app, app.person, method, address, 403,
-    'The first owner is set at install.', method === 'PUT' ? { body: { role: 'viewer' } } : {});
+    'The first owner is set when the CRM is installed. Ask Wiser to change it.', method === 'PUT' ? { body: { role: 'viewer' } } : {});
   assert.equal((await rows(app.crmDb, 'wiser_people'))[0].role, 'viewer');
   assert.deepEqual(await app.api('GET', roster, 200), {
     you: { email: owner, role: 'owner' }, people: [{ email: owner, role: 'owner', first_owner: true }],
@@ -500,7 +500,7 @@ test('a Kelvin sign in the signed address does not match the ASCII first owner',
   const app = await startApp(t, { ...appOptions, ownerEmail: 'k@example.com', checkOpenapi: false });
   const email = '\u212A@example.com';
   const token = await app.personFor(email);
-  await refused(app, token, 'GET', roster, 403, 'Ask an owner to set your role.');
+  await refused(app, token, 'GET', roster, 403, 'An owner of this CRM needs to give you a role. Ask them, then reload this page.');
   const [row] = await rows(app.crmDb, 'wiser_people');
   assert.equal(row.email, email);
   assert.equal(row.role, null);
@@ -512,7 +512,7 @@ test('a Kelvin sign in the signed address does not match an ASCII people row', {
   const email = '\u212A@example.com';
   await setRole(app, ascii, 'member');
   const token = await app.personFor(email);
-  await refused(app, token, 'GET', roster, 403, 'Ask an owner to set your role.');
+  await refused(app, token, 'GET', roster, 403, 'An owner of this CRM needs to give you a role. Ask them, then reload this page.');
   await setRole(app, email, 'viewer');
   assert.deepEqual((await app.api('GET', roster, 200, { token })).you, { email, role: 'viewer' });
   assert.deepEqual((await app.api('GET', roster, 200, { token: await app.personFor(ascii) })).you,
@@ -526,6 +526,6 @@ test('mixed-case owner cannot change the percent-encoded first owner', { timeout
   assert.deepEqual((await app.api('GET', roster, 200, { token })).you, { email, role: 'owner' });
   const before = await rows(app.crmDb, 'wiser_people');
   await refused(app, token, 'PUT', '/api/wiser/people/owner%40example.com', 403,
-    'The first owner is set at install.', { body: { role: 'viewer' } });
+    'The first owner is set when the CRM is installed. Ask Wiser to change it.', { body: { role: 'viewer' } });
   assert.deepEqual(await rows(app.crmDb, 'wiser_people'), before);
 });

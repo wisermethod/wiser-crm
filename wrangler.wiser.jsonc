@@ -25,6 +25,7 @@
     "AGENT_CLIENT_ID": "",
     "WISER_INSTANCE": "",
     "WISER_READ_ONLY": "",
+    "OWNER_EMAIL": "",
     "BRAND_NAME": "",
     "BRAND_ACCENT": ""
   }

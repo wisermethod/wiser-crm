@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { argumentsFor, assemble, checkCommand, moduleType, noScopeRegistry, readConfig, runChecks, sha256 } from './build.mjs';
 import { checkRelease } from './sign.mjs';
+import { publishedVariables } from '../tests/fixtures/release-manifests.mjs';
 
 const repo = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const commit = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
@@ -112,7 +113,7 @@ test('format 3 assembly matches FORMAT.md byte for byte and passes the checker',
         worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
         assets: { binding: 'ASSETS', config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [asset('/assets/app.js', 'application/javascript', 'export default {};\n'), asset('/index.html', 'text/html; charset=utf-8', '<h1>fixture</h1>\n')] },
         bindings: { d1: [{ name: 'DB', database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }], mail: [] },
-        vars: { required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], optional: ['BRAND_NAME', 'BRAND_ACCENT'] },
+        vars: { required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY', 'OWNER_EMAIL'], optional: ['BRAND_NAME', 'BRAND_ACCENT'] },
         migrations: { database: 'crm', table: 'd1_migrations', files: [ref('0001_baseline.sql', 'SELECT 1;\n'), ref('0002_next.sql', 'SELECT 2;\n'), ref('0010_later.sql', 'SELECT 10;\n')] },
       },
       'wiser-crm-intake': {
@@ -220,22 +221,50 @@ test('assembly refuses an app source planted in the intake bundle bytes alone', 
   assert.equal(fs.existsSync(f.options.release), false);
 });
 
-test('the checker still accepts the 0.2.0 variable set and refuses mixed or reordered lists', t => {
+test('the checker still accepts the published 0.2.0 variable set and refuses mixed or reordered lists', t => {
   const f = assemblyFixture(t);
   const release = path.join(path.dirname(f.options.release), '0.2.0');
   assemble({ ...f.options, version: '0.2.0', release });
   const manifestFile = path.join(release, 'manifest.json');
   const { manifest } = checkRelease(release);
-  const crmVars = manifest.apps['wiser-crm'].vars;
-  const intakeVars = manifest.apps['wiser-crm-intake'].vars;
+  const crm = manifest.apps['wiser-crm'], intake = manifest.apps['wiser-crm-intake'];
+  const newCrmVars = crm.vars, newIntakeVars = intake.vars;
+  const oldCrmVars = publishedVariables['wiser-crm'], oldIntakeVars = publishedVariables['wiser-crm-intake'];
   const write = () => fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
-  crmVars.optional = [];
+
+  crm.vars = { required: newCrmVars.required, optional: oldCrmVars.optional };
+  intake.vars = oldIntakeVars;
   write();
   assert.throws(() => checkRelease(release), /optional variable declarations/);
-  intakeVars.optional.pop();
+
+  crm.vars = { required: oldCrmVars.required, optional: newCrmVars.optional };
+  intake.vars = newIntakeVars;
+  write();
+  assert.throws(() => checkRelease(release), /optional variable declarations/);
+
+  crm.vars = oldCrmVars;
+  intake.vars = oldIntakeVars;
   write();
   assert.deepEqual(checkRelease(release).manifest, manifest);
-  intakeVars.optional.reverse();
+
+  intake.vars = { ...oldIntakeVars, optional: [...oldIntakeVars.optional].reverse() };
   write();
   assert.throws(() => checkRelease(release), /optional variable declarations/);
+});
+
+for (const [name, alter] of [
+  ['the older optional list with OWNER_EMAIL', vars => { delete vars.BRAND_NAME; delete vars.BRAND_ACCENT; }],
+  ['the newer optional list without OWNER_EMAIL', vars => { delete vars.OWNER_EMAIL; }],
+]) test(`assembly refuses ${name}`, t => {
+  const f = assemblyFixture(t);
+  alter(f.options.config.vars);
+  assert.throws(() => assemble(f.options), /wiser-crm install variables/);
+  assert.equal(fs.existsSync(f.options.release), false);
+});
+
+test('assembly refuses OWNER_EMAIL in intake configuration', t => {
+  const f = assemblyFixture(t);
+  f.options.intake.config.vars.OWNER_EMAIL = '';
+  assert.throws(() => assemble(f.options), /wiser-crm-intake install variables/);
+  assert.equal(fs.existsSync(f.options.release), false);
 });

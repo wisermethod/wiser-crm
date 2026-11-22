@@ -162,7 +162,7 @@ export async function signIn<E extends AssetEnvironment, C>(
   if (readOnly && (!readMethod || isWritingGet(path))) return refusal(503, upgradeError);
   if (you !== "agent" && !mayWriteApp(you.role)
     && (!readMethod || (isViewerSyncRead(path) && !(await syncIsOff(env.DB))))) {
-    return refusal(403, "Viewers can only read the CRM.");
+    return refusal(403, "You have view-only access. Ask an owner if you need to make changes.");
   }
   if (path === peoplePath || path.startsWith(peoplePath + "/")) {
     try {

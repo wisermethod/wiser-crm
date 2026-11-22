@@ -212,3 +212,11 @@ Fills spend the org's Clawnify credits: fill what the user asked for, not more.
 ## Agent-mode UI
 
 Append `?agent=true` for larger targets and always-visible action buttons.
+
+## People and roles
+
+`GET /api/wiser/people` returns `you` (the caller's email and role or `"agent"`)
+and `people` (the first owner, people with roles, and people waiting for a role).
+An agent may read the list and leaves role changes, additions and removals to
+a CRM owner. A person is admitted to sign-in through Cloudflare Access and
+given a role in the CRM.

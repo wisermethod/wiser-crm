@@ -61,7 +61,7 @@ illustrative.
       "mail": []
     },
     "vars": {
-      "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "AGENT_CLIENT_ID", "WISER_INSTANCE", "WISER_READ_ONLY"],
+      "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "AGENT_CLIENT_ID", "WISER_INSTANCE", "WISER_READ_ONLY", "OWNER_EMAIL"],
       "optional": ["BRAND_NAME", "BRAND_ACCENT"]
     },
     "migrations": {
@@ -134,7 +134,10 @@ illustrative.
   lists shown, in that order. A format 3 release declares one of two variable
   sets. In the 0.2.0 set, the CRM's optional list is empty and intake's is
   `["INTAKE_MAX_PER_ADDRESS_PER_DAY", "INTAKE_MAX_PER_HOUR", "CRM_URL"]`.
-  The set shown above adds the brand variables. Both apps in a release must
+  The 0.2.0 set uses the five CRM required names shown above without
+  `OWNER_EMAIL`. Intake's required list is the same in both sets.
+  The set shown above adds the brand variables and requires `OWNER_EMAIL`
+  for the CRM. Both apps in a release must
   use the same set. Before the first install write, require values
   for both apps' required inputs and refuse undeclared variable names.
   Use the forms under [Install variables](#install-variables). Preserve the
@@ -164,7 +167,7 @@ illustrative.
 
 ## Install variables
 
-The CRM uses these forms in formats 2 and 3. The brand variables are optional and appear in the newer format 3 set.
+The CRM uses these forms in formats 2 and 3. The brand variables are optional and appear in the newer format 3 set. The newer set alone requires `OWNER_EMAIL`.
 
 | Variable | Form the Worker enforces | Code |
 | --- | --- | --- |
@@ -173,6 +176,7 @@ The CRM uses these forms in formats 2 and 3. The brand variables are optional an
 | `AGENT_CLIENT_ID` | An empty or missing value disables agent sign-in only. For agent sign-in it must exactly match the verified assertion's `common_name` when its `sub` is empty. Staff sign-in is unaffected. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
 | `WISER_INSTANCE` | After verifying an Access assertion, `GET` and `HEAD /api/wiser/instance` return 503 if the name is empty or missing and report the value as supplied otherwise. Before this route, an unsigned request returns 401 when sign-in is configured, or 503 with `Sign-in is not configured.` when sign-in is unconfigured. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
 | `WISER_READ_ONLY` | An empty string or exactly `false` allows writes, as does an unset value at runtime. Every other value activates read-only mode. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
+| `OWNER_EMAIL` | One plain email address with one at sign, characters on each side, and no whitespace, control characters, angle brackets, commas or semicolons. The Worker compares it with the signed-in person’s email after lowercasing ASCII letters in both. That person is always an owner and cannot be removed or demoted inside the CRM. If the value is missing or malformed, the Worker returns 503 to every request that passes Access verification. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn`, [`runtime/people/index.ts`](../runtime/people/index.ts) `plainEmail` and [`worker/people.ts`](../worker/people.ts) `peopleResponse` |
 | `BRAND_NAME` | 1–40 Unicode characters after trimming. Control characters, `<`, `>` and line breaks anywhere in the input are refused. An omitted or invalid value uses Wiser CRM in the navigation and page title. | [`worker/brand.ts`](../worker/brand.ts) `displayName` and `installBrand` |
 | `BRAND_ACCENT` | Exactly `#` followed by six ASCII hexadecimal digits. The CRM fits light and dark tones to Mist's surfaces. An omitted or invalid value uses Mist's teal. | [`worker/brand.ts`](../worker/brand.ts) `installBrand` and `fitAccent` |
 
