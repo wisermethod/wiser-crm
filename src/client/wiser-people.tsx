@@ -94,11 +94,19 @@ export function WiserPeople() {
       await peopleRequest(`${apiPath}/${encodeURIComponent(address)}`, role === undefined
         ? { method: "DELETE" }
         : { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
-      setList(await readPeople());
-      return true;
     } catch (error) {
       setError(error instanceof Error ? error.message : "Request failed");
+      setPending(false);
       return false;
+    }
+    try {
+      setList(await readPeople());
+      return true;
+    } catch {
+      // The change was saved and the list can no longer be read, as when the
+      // caller's own access changed. Load the page again and show what is true now.
+      window.location.reload();
+      return true;
     } finally {
       setPending(false);
     }
@@ -115,7 +123,8 @@ export function WiserPeople() {
   }
 
   function row(person: Person) {
-    const editable = owner && !person.first_owner;
+    // An owner changes other people. Their own row is another owner's to change.
+    const editable = owner && !person.first_owner && person.email !== you?.email;
     return (
       <TableRow key={person.email} className="hover:bg-transparent">
         <TableCell className="h-10 pl-4 lg:pl-6">
@@ -140,7 +149,7 @@ export function WiserPeople() {
                 </span>
               )}
               {person.first_owner && <span className="text-[13px] text-muted-foreground">First owner</span>}
-              {!owner && you?.email === person.email && <span className="text-[13px] text-muted-foreground">You</span>}
+              {you?.email === person.email && <span className="text-[13px] text-muted-foreground">You</span>}
             </span>
           )}
         </TableCell>

@@ -254,6 +254,22 @@ for (const [role, label] of [['member', 'Member'], ['viewer', 'Viewer']]) {
   });
 }
 
+test('a second owner changes other people and not their own row', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'owner' } });
+  await app.api('PUT', '/api/wiser/people/other%40example.test', 204, { body: { role: 'member' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/settings/people');
+  await waitFor(browser, "document.querySelectorAll('main tbody tr').length >= 3");
+  assert.equal(await browser.evaluate(`Boolean((${janeRow}).querySelector('button, [role=combobox]'))`), false,
+    'no control on the signed-in owner\'s own row');
+  assert.deepEqual(await browser.evaluate(`Array.from((${janeRow}).cells[1].querySelectorAll('span > span'), span => span.textContent)`),
+    ['Owner', 'You']);
+  const other = "[...document.querySelectorAll('main tbody tr')].find(row => row.innerText.includes('other@example.test'))";
+  assert.equal(await browser.evaluate(`Boolean((${other}).querySelector('[role=combobox]')) && Boolean((${other}).querySelector('button[aria-label^="Remove "]'))`), true,
+    'another person stays editable');
+});
+
 test('a viewer submitting Add contact sees the approved refusal in the app banner', browserOptions, async (t) => {
   const app = await startApp(t);
   await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
