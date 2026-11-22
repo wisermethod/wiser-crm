@@ -5,6 +5,7 @@ export const peoplePath = "/api/wiser/people";
 const noStore = { "Cache-Control": "no-store" };
 const bodyLimit = 1024;
 const drainLimit = 64 * 1024;
+const drainMs = 250;
 const waitingTitle = "You're signed in, but not set up yet";
 const waitingLine = "An owner of this CRM needs to give you a role. Ask them, then reload this page.";
 type PersonCaller = { email: string; role: Role };
@@ -92,6 +93,30 @@ function pathEmail(segment: string): string | null {
   }
 }
 
+// Discard a little more of a refused body, so a sender still writing a slightly
+// oversized one is not cut off mid-send. Bounded in bytes and in time, and it
+// never changes the refusal: a slow, endless or failing sender gets the 413.
+async function drain(reader: ReadableStreamDefaultReader<Uint8Array>, seen: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), drainMs); });
+  try {
+    while (seen < drainLimit) {
+      const next = await Promise.race([reader.read(), late]);
+      if (next === "late" || next.done) break;
+      seen += next.value.length;
+    }
+  } catch {
+    // The refusal stands whatever the sender does next.
+  } finally {
+    clearTimeout(timer);
+  }
+  try {
+    await reader.cancel();
+  } catch {
+    // Already closed or errored.
+  }
+}
+
 async function readRole(request: Request): Promise<Role | Response> {
   const type = request.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase();
   if (type !== "application/json") return refusal(415, "Send a JSON body with a role.");
@@ -106,15 +131,7 @@ async function readRole(request: Request): Promise<Role | Response> {
       const { done, value } = await reader.read();
       if (done) break;
       if (length + value.length > bodyLimit) {
-        // Discard a little more before answering, so a sender still writing a
-        // slightly oversized body is not cut off mid-send, then stop reading.
-        let extra = value.length;
-        while (extra < drainLimit) {
-          const rest = await reader.read();
-          if (rest.done) break;
-          extra += rest.value.length;
-        }
-        await reader.cancel();
+        await drain(reader, value.length);
         return refusal(413, "The body is too large.");
       }
       bytes.set(value, length);
