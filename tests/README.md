@@ -125,3 +125,16 @@ WRANGLER_SEND_METRICS=false WISER_TEST_RELEASES=/absolute/out1/wiser-crm/0.3.2,/
 
 This verifies the bytes stored by the release builder (including their hashes
 and sizes), without a deployment or a request to an external key server.
+
+## When a suite fails on the local harness
+
+A failure reading `SQLITE_BUSY`, "Your worker restarted mid-request" or a stray
+503 where another status was expected can be the local harness and not the code
+under test. Run that suite once more and count it failing only if it fails
+again.
+
+Look before rerunning when the same line fails more than once. A handler that
+answers before it has read the whole request body makes the next request on
+that connection fail with "Your worker restarted mid-request", about one run in
+three. Read or cancel the body before answering, as `worker/people.ts` `drain`
+does for a refused oversized body.
