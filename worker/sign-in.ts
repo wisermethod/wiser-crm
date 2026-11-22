@@ -1,8 +1,10 @@
 import { getPath } from "hono/utils/url";
 import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { withIdentity, type Identity } from "../runtime/app/identity.ts";
+import { findPerson, isReadMethod, mayWriteApp, plainEmail, type PeopleDatabase } from "../runtime/people/index.ts";
 import { installBrand, type BrandSettings } from "./brand.ts";
-import { isWritingGet } from "./get-routes.ts";
+import { isViewerSyncRead, isWritingGet } from "./get-routes.ts";
+import { peoplePath, peopleResponse, refusal, waitForRole, type PeopleCaller } from "./people.ts";
 import type { TakeInCounts } from "./take-in.ts";
 import { releaseVersion } from "./version.ts";
 
@@ -10,6 +12,7 @@ export interface SignInConfiguration {
   teamDomain?: string;
   audience?: string;
   agentClientId?: string;
+  ownerEmail?: string;
 }
 
 export function isConfigured(config: SignInConfiguration): boolean {
@@ -20,6 +23,7 @@ export function isConfigured(config: SignInConfiguration): boolean {
 }
 
 interface AssetEnvironment extends BrandSettings {
+  DB: PeopleDatabase;
   ASSETS: { fetch(request: Request): Promise<Response> };
   WISER_INSTANCE?: string;
   WISER_READ_ONLY?: string;
@@ -61,13 +65,6 @@ function unavailableFeature(method: string, path: string): boolean {
   return (method === "GET" || method === "HEAD") && path === "/api/email-sync/labels";
 }
 
-function refusal(status: number, error: string): Response {
-  return new Response(JSON.stringify({ error }), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
-  });
-}
-
 /** All request policy lives here; keys and both downstream fetches are injected. */
 export async function signIn<E extends AssetEnvironment, C>(
   request: Request,
@@ -89,7 +86,8 @@ export async function signIn<E extends AssetEnvironment, C>(
   const token = request.headers.get("Cf-Access-Jwt-Assertion");
   if (!token) return refusal(401, "Sign in to use Wiser CRM.");
 
-  let identity: Identity;
+  let identity: { caller: "user"; user: NonNullable<Identity["user"]> }
+    | { caller: "agent"; user: null };
   try {
     const { payload, protectedHeader } = await jwtVerify(token, dependencies.keySet, {
       algorithms: ["RS256"],
@@ -111,15 +109,41 @@ export async function signIn<E extends AssetEnvironment, C>(
     return refusal(401, "Sign in to use Wiser CRM.");
   }
 
-  if (identity.caller === "agent" && request.headers.has("Cf-Access-Authenticated-User-Email")) {
-    return refusal(403, "An agent cannot supply a person identity.");
-  }
+  const firstOwner = plainEmail(config.ownerEmail);
+  if (!firstOwner) return refusal(503, "This install has no owner configured.");
 
   const path = (dependencies.routePath ?? getPath)(request);
   // Missing and empty are writable; every other spelling except exact false
   // fails closed, so a mistyped upgrade flag cannot reopen writes.
   const readOnly = env.WISER_READ_ONLY !== undefined
     && env.WISER_READ_ONLY !== "" && env.WISER_READ_ONLY !== "false";
+  const upgradeError = "The CRM is read-only during an upgrade.";
+  // A regular expression's end anchor can match before a trailing newline.
+  // Reject control characters before classifying any decoded route.
+  if (/[\u0000-\u001f\u007f\u2028\u2029]/.test(path)) {
+    return readOnly ? refusal(503, upgradeError) : refusal(400, "This request path is invalid.");
+  }
+
+  let you: PeopleCaller = "agent";
+  if (identity.caller === "agent") {
+    if (request.headers.has("Cf-Access-Authenticated-User-Email")) {
+      return refusal(403, "An agent cannot supply a person identity.");
+    }
+  } else {
+    const email = identity.user.email.toLowerCase();
+    if (email === firstOwner) {
+      you = { email, role: "owner" };
+    } else {
+      try {
+        const person = await findPerson(env.DB, email);
+        if (!person?.role) return await waitForRole(request, env.DB, email, !readOnly && !person);
+        you = { email, role: person.role };
+      } catch {
+        return refusal(503, "People are unavailable.");
+      }
+    }
+  }
+
   if ((request.method === "GET" || request.method === "HEAD") && path === "/api/wiser/instance") {
     if (!env.WISER_INSTANCE) return refusal(503, "This install has no instance name.");
     return Response.json({ instance: env.WISER_INSTANCE, version: releaseVersion, caller: identity.caller, read_only: readOnly }, {
@@ -132,14 +156,18 @@ export async function signIn<E extends AssetEnvironment, C>(
       ? new Response(null, { headers })
       : Response.json(installBrand(env), { headers });
   }
-  // Hono runs GET handlers for HEAD too. Apply this before every existing
-  // app/asset policy so no downstream code runs for an upgrade-time write.
-  // A route regex's `$` matches before one trailing line terminator, so a path
-  // ending in an encoded newline still reaches its handler; fail closed on any
-  // control or line-separator character while read-only.
-  if (readOnly && ((request.method !== "GET" && request.method !== "HEAD") || isWritingGet(path)
-    || /[\u0000-\u001f\u007f\u2028\u2029]/.test(path))) {
-    return refusal(503, "The CRM is read-only during an upgrade.");
+  // Hono also runs GET handlers for HEAD.
+  const readMethod = isReadMethod(request.method);
+  if (readOnly && (!readMethod || isWritingGet(path))) return refusal(503, upgradeError);
+  if (you !== "agent" && !mayWriteApp(you.role) && (!readMethod || isViewerSyncRead(path))) {
+    return refusal(403, "Viewers can only read the CRM.");
+  }
+  if (path === peoplePath || path.startsWith(peoplePath + "/")) {
+    try {
+      return await peopleResponse(request, path, env.DB, firstOwner, you);
+    } catch {
+      return refusal(503, "People are unavailable.");
+    }
   }
   if (request.method === "POST" && publicRuns.has(path)) {
     return refusal(403, "Public job runs are not available in Wiser CRM.");
@@ -159,7 +187,7 @@ export async function signIn<E extends AssetEnvironment, C>(
   if (path.startsWith("/api/") || path === "/llms.txt") {
     return dependencies.appFetch(request, withIdentity(env, identity), context);
   }
-  if (!readOnly && identity.caller === "user" && request.method === "GET"
+  if (!readOnly && you !== "agent" && mayWriteApp(you.role) && request.method === "GET"
     && request.headers.get("Accept")?.toLowerCase().includes("text/html")
     && dependencies.takeIn && typeof context === "object" && context !== null
     && "waitUntil" in context && typeof context.waitUntil === "function") {

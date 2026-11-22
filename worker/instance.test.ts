@@ -4,7 +4,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { fitAccent, type BrandSettings } from "./brand.ts";
 import { signIn } from "./sign-in.ts";
 
-const configuration = { teamDomain: "https://local.cloudflareaccess.com", audience: "local", agentClientId: "agent" };
+const configuration = { teamDomain: "https://local.cloudflareaccess.com", audience: "local", agentClientId: "agent", ownerEmail: "staff@example.test" };
 const keys = await generateKeyPair("RS256");
 const keySet = createLocalJWKSet({ keys: [{ ...await exportJWK(keys.publicKey), kid: "test", alg: "RS256" }] });
 async function mint(agent = false) {
@@ -15,7 +15,7 @@ async function mint(agent = false) {
 const staff = await mint(), agent = await mint(true);
 function harness(flag?: string, instance: string | undefined = "test-install", brand: BrandSettings = {}) {
   let appCalls = 0, assetCalls = 0;
-  const env = { ...brand, WISER_INSTANCE: instance, WISER_READ_ONLY: flag, ASSETS: { async fetch() { assetCalls++; return new Response("asset"); } } };
+  const env = { DB: { prepare() { throw new Error("Unexpected people lookup"); } }, ...brand, WISER_INSTANCE: instance, WISER_READ_ONLY: flag, ASSETS: { async fetch() { assetCalls++; return new Response("asset"); } } };
   return {
     calls: () => [appCalls, assetCalls],
     fetch(path: string, method = "GET", credential: string | null = staff, headers = {}) {
@@ -69,7 +69,7 @@ for (const [credential, caller] of [[staff, "user"], [agent, "agent"]]) {
 for (const instance of ["", undefined]) {
   test(`instance refuses ${instance === "" ? "empty" : "unset"} name`, async () => {
     // Remove the binding as well as testing its empty value.
-    const env = { WISER_INSTANCE: instance, ASSETS: { async fetch() { return new Response("asset"); } } };
+    const env = { DB: { prepare() { throw new Error("Unexpected people lookup"); } }, WISER_INSTANCE: instance, ASSETS: { async fetch() { return new Response("asset"); } } };
     const response = await signIn(new Request("https://crm.example.test/api/wiser/instance", { headers: { "Cf-Access-Jwt-Assertion": staff } }), env, {}, {
       configuration, keySet, appFetch() { throw new Error("Unnamed instance reached upstream"); },
     });

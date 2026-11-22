@@ -18,6 +18,8 @@ function harness(enabled: string | undefined = "1", keys: string | undefined = J
   let loads = 0;
   const env = {
     WISER_LOCAL_DEV: enabled,
+    OWNER_EMAIL: "person@example.test",
+    DB: { prepare() { throw new Error("Unexpected people lookup"); } },
     DEV_JWKS: keys,
     ASSETS: { async fetch(req: Request) { calls.push(req); return new Response("asset"); } },
   };
@@ -58,7 +60,7 @@ test("127.0.0.1 refuses when the explicit local flag is unset or different", asy
     assert.equal(h.calls.length, 0);
   }
   const h = harness();
-  const env = { ASSETS: { async fetch() { throw new Error("assets called"); } } };
+  const env = { DB: { prepare() { throw new Error("Unexpected people lookup"); } }, ASSETS: { async fetch() { throw new Error("assets called"); } } };
   const res = await localFetch(new Request("http://127.0.0.1/"), env, {}, async () => {
     throw new Error("app loaded");
   });

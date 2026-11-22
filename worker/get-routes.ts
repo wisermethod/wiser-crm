@@ -45,11 +45,25 @@ export const writingGetRoutes: Readonly<Record<string, string>> = {
   "/api/views": "src/server/index.ts:3943 ensureDefaultView -> :3934 INSERT OR IGNORE views",
 };
 
-export function isWritingGet(path: string): boolean {
+const viewerSyncRoutes = [
+  "/api/contacts/{id}/emails",
+  "/api/email-sync",
+  "/api/meetings/sync",
+];
+
+function matchesRoute(path: string, templates: readonly string[]): boolean {
   const segments = path.split("/");
-  return Object.keys(writingGetRoutes).some(template => {
+  return templates.some(template => {
     const parts = template.split("/");
     return parts.length === segments.length && parts.every((part, i) =>
       part.startsWith("{") && part.endsWith("}") ? segments[i].length > 0 : part === segments[i]);
   });
+}
+
+export function isWritingGet(path: string): boolean {
+  return matchesRoute(path, Object.keys(writingGetRoutes));
+}
+
+export function isViewerSyncRead(path: string): boolean {
+  return matchesRoute(path, viewerSyncRoutes);
 }

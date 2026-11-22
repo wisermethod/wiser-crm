@@ -3,8 +3,10 @@ import { signIn, type SignInDependencies } from "../sign-in.ts";
 import { takeIn } from "../take-in.ts";
 
 interface LocalEnvironment {
+  DB: Pick<D1Database, "prepare">;
   WISER_LOCAL_DEV?: string;
   DEV_JWKS?: string;
+  OWNER_EMAIL?: string;
   ASSETS: { fetch(request: Request): Promise<Response> };
 }
 
@@ -72,13 +74,14 @@ export async function localFetch<E extends LocalEnvironment, C>(
   } catch {
     return jsonError(503, "Local sign-in keys are not configured.");
   }
-  return signIn(new Request(request, { headers }), env, context, {
+  return signIn(cookie === undefined ? request : new Request(request, { headers }), env, context, {
     ...await loadApp(),
     keySet,
     configuration: {
       teamDomain: "https://local.cloudflareaccess.com",
       audience: "local",
       agentClientId: "local-agent",
+      ownerEmail: env.OWNER_EMAIL,
     },
   });
 }

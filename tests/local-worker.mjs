@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -19,6 +19,7 @@ Object.assign(process.env, {
   XDG_CONFIG_HOME: join(scratch, 'config'), TMPDIR: `${scratch}/`, CI: 'true',
 });
 const require = createRequire(import.meta.url);
+const defaultPersonEmail = 'person@example.test';
 const wranglerCli = resolve(dirname(require.resolve('wrangler')), '../bin/wrangler.js');
 const { unstable_startWorker } = await import('wrangler');
 
@@ -71,14 +72,14 @@ async function startLocalWorker(t, config, directory, persist, bindings = {}) {
   return url;
 }
 
-function requestLocal(url, method, path, { body, headers = {} } = {}) {
+function requestLocal(url, method, path, { body, headers = {}, pool } = {}) {
   // http.request preserves a deliberate Host override while the TCP peer
   // always remains 127.0.0.1; redirects are never followed.
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1', port: Number(url.port), method, path,
       headers,
-      agent: false,
+      agent: pool,
     }, (response) => {
       let text = '';
       response.setEncoding('utf8');
@@ -96,8 +97,14 @@ function requestLocal(url, method, path, { body, headers = {} } = {}) {
 }
 
 /** Real local entry, real wrapper, real app and a fresh Wrangler-migrated D1. */
-export async function startApp(t, { vars = {}, release, intake = false, intakeVars = {} } = {}) {
+export async function startApp(t, {
+  vars = {}, release, production = false, intake = false, intakeVars = {},
+  ownerEmail = release ? null : defaultPersonEmail, checkOpenapi = true,
+  inspect = false, setupBaseline, baselineOnly = false, wrapWorker,
+} = {}) {
   const directory = await mkdtemp(join(scratch, 'worker-'));
+  const pool = new http.Agent({ keepAlive: true });
+  t.after(() => pool.destroy());
   const persist = join(directory, 'state');
   const keys = await generateKeyPair('RS256', { extractable: true });
   const kid = crypto.randomUUID();
@@ -108,7 +115,7 @@ export async function startApp(t, { vars = {}, release, intake = false, intakeVa
   // Keep all Wrangler build/state files outside the checkout. These are the
   // local config's entry, flags and bindings, with absolute paths for scratch.
   const local = JSON.parse(await readFile(join(root, 'wrangler.local.jsonc'), 'utf8'));
-  let main = join(root, local.main);
+  let main = join(root, production ? "worker/index.ts" : local.main);
   let assets = join(root, local.assets.directory);
   if (release) {
     // The signer's checker refuses an unknown format and any path or digest
@@ -136,42 +143,79 @@ export async function startApp(t, { vars = {}, release, intake = false, intakeVa
   await writeFile(bootstrap, `import worker from ${JSON.stringify(main)};
 globalThis.fetch = async (input) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  if (${Boolean(release)} && url === 'https://local.cloudflareaccess.com/cdn-cgi/access/certs') {
+  if (${Boolean(release || production)} && url === 'https://local.cloudflareaccess.com/cdn-cgi/access/certs') {
     return Response.json(${JSON.stringify(jwks)});
   }
   throw new Error('External network requests are forbidden in local tests');
 };
-export default worker;
+export default ${wrapWorker ? '(' + wrapWorker.toString() + ')(worker)' : 'worker'};
 `);
-  await writeFile(config, JSON.stringify({
-    ...local, main: bootstrap, vars: { ...local.vars, ...vars },
+  const settings = {
+    ...local, main: bootstrap,
+    vars: {
+      ...local.vars,
+      ...(production ? { ACCESS_TEAM_DOMAIN: 'https://local.cloudflareaccess.com', ACCESS_AUD: 'local', AGENT_CLIENT_ID: 'local-agent' } : {}),
+      ...(ownerEmail === null ? {} : { OWNER_EMAIL: ownerEmail }),
+      ...vars,
+    },
     d1_databases: local.d1_databases
       .filter((db) => intake || db.binding !== 'INTAKE_DB')
       .map((db) => ({ ...db, migrations_dir: join(root, db.migrations_dir) })),
     assets: { ...local.assets, directory: assets },
     send_metrics: false,
-  }));
-  migrate(t, config, directory, persist, 'wiser-crm-db');
+  };
+
+  // Direct D1 setup and inspection share the Worker's local persistence.
+  const { Miniflare } = createRequire(require.resolve('wrangler'))('miniflare');
+  function inspection() {
+    return new Miniflare({
+      cf: false, script: '', modules: true, host: '127.0.0.1', port: 0,
+      defaultPersistRoot: join(persist, 'v3'),
+      d1Databases: Object.fromEntries(settings.d1_databases.map((db) => [db.binding, db.database_id])),
+    });
+  }
+  if (setupBaseline || baselineOnly) {
+    const baselineDirectory = join(directory, 'baseline');
+    await mkdir(baselineDirectory);
+    await copyFile(join(root, 'migrations/0001_baseline.sql'), join(baselineDirectory, '0001_baseline.sql'));
+    const baselineConfig = join(directory, 'wrangler-baseline.json');
+    await writeFile(baselineConfig, JSON.stringify({
+      ...settings,
+      d1_databases: settings.d1_databases.map((db) => db.binding === 'DB'
+        ? { ...db, migrations_dir: baselineDirectory } : db),
+    }));
+    migrate(t, baselineConfig, directory, persist, 'wiser-crm-db');
+    if (setupBaseline) {
+      const proxy = inspection();
+      try { await setupBaseline(await proxy.getD1Database('DB')); } finally { await proxy.dispose(); }
+    }
+  }
+  await writeFile(config, JSON.stringify(settings));
+  if (!baselineOnly) migrate(t, config, directory, persist, 'wiser-crm-db');
   const url = await startLocalWorker(t, config, directory, persist, {
     DEV_JWKS: { type: 'plain_text', value: JSON.stringify(jwks) },
   });
 
   async function mint(claims = {}, privateKey = keys.privateKey, keyId = kid) {
     return new SignJWT({
-      type: 'app', sub: 'local-person', email: 'person@example.test',
+      type: 'app', sub: 'local-person', email: defaultPersonEmail,
       iss: 'https://local.cloudflareaccess.com', aud: 'local',
       exp: Math.floor(Date.now() / 1000) + 600, ...claims,
     }).setProtectedHeader({ alg: 'RS256', kid: keyId }).sign(privateKey);
   }
   const person = await mint();
   const agent = await mint({ sub: '', email: undefined, common_name: 'local-agent' });
-  async function request(method, path, { token = person, body, headers = {} } = {}) {
+  const personFor = (email) => mint({ email, sub: `person:${email.toLowerCase()}` });
+  async function request(method, path, { token = person, body, rawBody, headers = {} } = {}) {
     assert.ok(path.startsWith('/'), 'Requests must be local paths');
+    const payload = rawBody ?? (body === undefined ? undefined : JSON.stringify(body));
+    const hasFraming = Object.keys(headers).some((name) => /^(content-length|transfer-encoding)$/i.test(name));
     return requestLocal(url, method, path, {
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: payload, pool,
       headers: {
         ...(token ? { 'Cf-Access-Jwt-Assertion': token } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(payload === undefined || hasFraming ? {} : { 'Content-Length': Buffer.byteLength(payload) }),
         ...headers,
       },
     });
@@ -182,13 +226,19 @@ export default worker;
     t.diagnostic(`${method} ${path}: ${response.status}`);
     return response.data;
   }
-  const openapi = await api('GET', '/api/openapi.json', 200);
+  const openapi = checkOpenapi ? await api('GET', '/api/openapi.json', 200) : undefined;
   function operation(method, path) {
-    const operation = openapi.paths[path]?.[method.toLowerCase()];
+    const operation = openapi?.paths[path]?.[method.toLowerCase()];
     assert.ok(operation, `Live OpenAPI is missing ${method} ${path}`);
     return operation;
   }
-  const app = { directory, request, api, operation, openapi, mint, person, agent, kid };
+  const app = { directory, url, request, api, operation, openapi, mint, personFor, person, agent, kid };
+  if (intake || inspect) {
+    const proxy = inspection();
+    t.after(() => proxy.dispose());
+    app.crmDb = await proxy.getD1Database('DB');
+    if (intake) app.intakeDb = await proxy.getD1Database('INTAKE_DB');
+  }
   if (!intake) return app;
 
   const intakeDirectory = join(directory, 'intake');
@@ -210,22 +260,11 @@ export default worker;
   migrate(t, intakeConfig, intakeDirectory, persist, 'wiser-crm-intake-db');
   const intakeUrl = await startLocalWorker(t, intakeConfig, intakeDirectory, persist);
 
-  // Give test setup and assertions D1 handles without a public inspection route.
-  // Use Wrangler's Miniflare dependency with metadata fetching explicitly off.
-  const { Miniflare } = createRequire(require.resolve('wrangler'))('miniflare');
-  const inspection = new Miniflare({
-    cf: false, script: '', modules: true, host: '127.0.0.1', port: 0,
-    defaultPersistRoot: join(persist, 'v3'),
-    d1Databases: Object.fromEntries(local.d1_databases.map((db) => [db.binding, db.database_id])),
-  });
-  t.after(() => inspection.dispose());
-  const crmDb = await inspection.getD1Database('DB');
-  const intakeDb = await inspection.getD1Database('INTAKE_DB');
   return {
-    ...app, crmDb, intakeDb,
+    ...app,
     intakeRequest(method, path, options) {
       assert.ok(path.startsWith('/'), 'Intake requests must be local paths');
-      return requestLocal(intakeUrl, method, path, options);
+      return requestLocal(intakeUrl, method, path, { ...options, pool });
     },
   };
 }

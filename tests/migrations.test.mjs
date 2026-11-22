@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { baseline, command, database, execute, preservationCase, preserves, root, sameShape, shape, snapshot, scratchRoot } from './migration-helpers.mjs';
@@ -7,6 +7,10 @@ import { baseline, command, database, execute, preservationCase, preserves, root
 const migrations = (await readdir(join(root, 'migrations'))).filter((name) => name.endsWith('.sql')).sort();
 const migrationFiles = migrations.map((name) => join(root, 'migrations', name));
 assert.equal(migrations[0], '0001_baseline.sql');
+
+const peopleMigration = '0002_people.sql';
+const backfillMarkers = new Set(['deals.company_id', 'companies.customer_since']);
+const allowsPeopleBackfillMarkers = (table, row) => table === 'data_backfills' && backfillMarkers.has(row.key);
 
 // The baseline is frozen at the fork commit it was copied from; later schema changes are migrations, which the drift test checks.
 const BASELINE_COMMIT = '4dd02ea';
@@ -17,7 +21,6 @@ test('baseline equals the schema it was frozen from, table by table, column by c
   assert.equal(await baseline(), committed.output, `Baseline bytes differ from ${BASELINE_COMMIT} schema`);
   const migrated = await database('baseline', join(root, 'migrations'));
   // This case intentionally applies only the baseline as later migrations grow.
-  const { cp, mkdtemp } = await import('node:fs/promises');
   const baselineDirectory = await mkdtemp(join(scratchRoot, 'baseline-only-'));
   await cp(migrationFiles[0], join(baselineDirectory, migrations[0]));
   const baselineDb = await database('baseline-only', baselineDirectory);
@@ -31,7 +34,15 @@ test('schema drift: every migration matches the working tree schema', async () =
   const schemaDb = await database('drift-schema');
   migrated.apply();
   await schemaDb.use((db) => readFile(join(root, 'src/server/schema.sql'), 'utf8').then((sql) => execute(db, sql)));
-  sameShape(await migrated.use(shape), await schemaDb.use(shape));
+  const actual = await migrated.use(shape);
+  if (migrations.includes(peopleMigration)) {
+    assert.ok(actual.tables.wiser_people);
+    // The fork owns this table. Compare every other table with upstream.
+    delete actual.tables.wiser_people;
+    delete actual.foreignKeys.wiser_people;
+    actual.indexes = actual.indexes.filter(({ table }) => table !== 'wiser_people');
+  }
+  sameShape(actual, await schemaDb.use(shape));
 });
 
 test('apply is idempotent and leaves the migration records unchanged', async () => {
@@ -64,7 +75,7 @@ test('adoption keeps every seeded row and custom value; repeated adoption and ap
   const applied = local.apply();
   if (migrations.length === 1) assert.match(applied, /No migrations to apply/);
   const after = await local.use(snapshot);
-  preserves(before, after);
+  preserves(before, after, migrations.includes(peopleMigration) ? allowsPeopleBackfillMarkers : undefined);
   if (migrations.length === 1) assert.deepEqual(after, before);
   const appliedRecords = await local.use(records);
   assert.deepEqual(appliedRecords.map(({ name }) => name), migrations);
@@ -130,7 +141,8 @@ test('every post-baseline migration keeps every record and every custom column',
       () => preservationCase([migrationFiles[0]], fixtures[2]), /Migration changed records in contacts/));
   }
   for (let index = 1; index < migrationFiles.length; index++) {
-    await t.test(migrations[index], () => preservationCase(migrationFiles.slice(0, index), migrationFiles[index]));
+    const exemption = migrations[index] === peopleMigration ? allowsPeopleBackfillMarkers : undefined;
+    await t.test(migrations[index], () => preservationCase(migrationFiles.slice(0, index), migrationFiles[index], exemption));
   }
 });
 
@@ -148,4 +160,17 @@ test('preservation fixture: rebuilding contacts without cf_test is detected', as
     t.diagnostic(`Expected rejection: ${error.message}`);
     return true;
   });
+});
+
+test('people migration preservation rejects a third marker', { skip: !migrations.includes(peopleMigration) }, async () => {
+  const directory = await mkdtemp(join(scratchRoot, 'third-marker-'));
+  const file = join(directory, peopleMigration);
+  const sql = await readFile(join(root, 'migrations', peopleMigration), 'utf8');
+  await writeFile(file, `${sql}
+INSERT INTO data_backfills (key) VALUES ('planted.third');
+`);
+  await assert.rejects(
+    () => preservationCase([migrationFiles[0]], file, allowsPeopleBackfillMarkers),
+    /Migration changed records in data_backfills/,
+  );
 });

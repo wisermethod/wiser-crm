@@ -7,6 +7,7 @@ import { takeIn } from "./take-in.ts";
 interface Environment extends BrandSettings {
   DB: D1Database;
   INTAKE_DB?: D1Database;
+  OWNER_EMAIL?: string;
   ASSETS: Fetcher;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -35,6 +36,7 @@ export default {
       teamDomain: env.ACCESS_TEAM_DOMAIN,
       audience: env.ACCESS_AUD,
       agentClientId: env.AGENT_CLIENT_ID,
+      ownerEmail: env.OWNER_EMAIL,
     };
     const intake = env.INTAKE_DB;
     return signIn(request, env, context, {

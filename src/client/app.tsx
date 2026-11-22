@@ -20,6 +20,7 @@ import { CustomersPage } from "./components/customers/customers-page";
 import { MeetingsSettingsPage } from "./components/meetings/meetings-settings-page";
 import { RecordPanel, RecordPanelHeader } from "./components/record-page";
 import { defaultBrandName, useInstallBrand } from "./install-brand";
+import { peoplePagePath, WiserPeople } from "./wiser-people";
 import "./styles.css";
 import "./wiser-theme.css";
 
@@ -38,6 +39,7 @@ const RECORDS: AppNavItem[] = [
   { id: "customers", label: "Customers", href: "/customers", icon: "activity", color: "orange" },
 ];
 const SETTINGS: AppNavItem[] = [
+  { id: "people", label: "People", href: peoplePagePath, icon: "users" },
   { id: "properties", label: "Attributes", href: "/settings/properties", icon: "layers" },
 ];
 
@@ -53,6 +55,7 @@ export function App() {
   const isAgent = document.documentElement.hasAttribute("data-agent");
   const state = useCrmState(isAgent);
   const { path, route, navigate } = useRouter();
+  const peoplePage = path.split("?")[0] === peoplePagePath;
   // A list opens its records in a side panel; the record's own path is the full page.
   const openRecord = route.name === "contacts" || route.name === "companies" || route.name === "deals" ? route.record : undefined;
 
@@ -101,7 +104,7 @@ export function App() {
             brandAttribution={brandName && brandName !== defaultBrandName ? defaultBrandName : undefined}
             icon="contact"
             groups={groups}
-            active={activeFor(route)}
+            active={peoplePage ? "people" : activeFor(route)}
             onNavigate={(item) => navigate(item.href ?? "/")}
           />
         </div>
@@ -152,7 +155,7 @@ export function App() {
               {route.name === "properties" && <PropertiesPage />}
               {route.name === "email-sync" && <EmailSyncPage />}
               {route.name === "meetings-sync" && <MeetingsSettingsPage />}
-              {route.name === "not-found" && (
+              {route.name === "not-found" && (peoplePage ? <WiserPeople /> : (
                 <div className="flex flex-1 flex-col items-center justify-center gap-2 p-12 text-center">
                   <h1 className="text-xl font-bold tracking-tight">Not found</h1>
                   <p className="text-sm text-muted-foreground">That page doesn't exist.</p>
@@ -160,7 +163,7 @@ export function App() {
                     Back to contacts
                   </button>
                 </div>
-              )}
+              ))}
             </>
           )}
         </main>

@@ -11,6 +11,7 @@ import { signIn, type SignInConfiguration } from "./sign-in.ts";
 const configuration = {
   teamDomain: "https://example.cloudflareaccess.com",
   audience: "test-audience",
+  ownerEmail: "person@example.com",
   agentClientId: "agent-client-id",
 };
 const { privateKey, publicKey } = await generateKeyPair("RS256");
@@ -35,6 +36,7 @@ function harness(config: SignInConfiguration = configuration, keySet: JWTVerifyG
   const assetCalls: Request[] = [];
   const context = { waitUntil(_work: Promise<unknown>) {}, passThroughOnException() {} };
   const env = {
+    DB: { prepare() { throw new Error("Unexpected people lookup"); } },
     marker: "original binding",
     ASSETS: { async fetch(request: Request) {
       assetCalls.push(request);

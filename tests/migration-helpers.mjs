@@ -150,7 +150,7 @@ export async function snapshot(db) {
   return tables;
 }
 
-export function preserves(before, after) {
+export function preserves(before, after, allowsAddedRow = () => false) {
   // Check columns before rows so a rebuild names the lost custom field directly.
   for (const [table, { columns }] of Object.entries(before)) {
     assert.ok(after[table], `Migration lost table ${table}`);
@@ -159,11 +159,13 @@ export function preserves(before, after) {
   for (const [table, { columns, rows }] of Object.entries(before)) {
     const projected = after[table].rows.map((row) => Object.fromEntries(columns.map((name) => [name, row[name]])));
     const sort = (items) => items.map((row) => JSON.stringify(row)).sort();
-    assert.deepEqual(sort(projected), sort(rows), `Migration changed records in ${table}`);
+    const addedOnly = projected.filter((row) =>
+      !allowsAddedRow(table, row) || rows.some((oldRow) => oldRow.key === row.key));
+    assert.deepEqual(sort(addedOnly), sort(rows), `Migration changed records in ${table}`);
   }
 }
 
-export async function preservationCase(files, nextFile) {
+export async function preservationCase(files, nextFile, allowsAddedRow) {
   const directory = await mkdtemp(join(scratchRoot, 'migration-chain-'));
   for (const file of files) await cp(file, join(directory, file.split('/').at(-1)));
   const local = await database('preservation', directory);
@@ -172,7 +174,7 @@ export async function preservationCase(files, nextFile) {
   await cp(nextFile, join(directory, nextFile.split('/').at(-1)));
   local.apply();
   const after = await local.use(snapshot);
-  preserves(before, after);
+  preserves(before, after, allowsAddedRow);
   return { before, after };
 }
 
