@@ -67,3 +67,18 @@ export function isWritingGet(path: string): boolean {
 export function isViewerSyncRead(path: string): boolean {
   return matchesRoute(path, viewerSyncRoutes);
 }
+
+export async function syncIsOff(db: Pick<D1Database, "prepare">): Promise<boolean> {
+  try {
+    // Settings store 0 or 1. Upstream also treats other nonzero values as on.
+    const off = await db.prepare(`
+      SELECT NOT (
+        EXISTS (SELECT 1 FROM email_accounts WHERE enabled <> 0)
+        OR EXISTS (SELECT 1 FROM meeting_sync WHERE enabled <> 0)
+      ) AS off
+    `).first<number>("off");
+    return off === 1;
+  } catch {
+    return false;
+  }
+}

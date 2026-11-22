@@ -130,3 +130,21 @@ test('an unassigned person gets the waiting page in Chrome', {
   await waitFor(browser, "document.querySelector('h1')?.textContent === 'Waiting for access'");
   assert.equal(await browser.evaluate('Boolean(document.querySelector("nav, script"))'), false);
 });
+
+for (const [path, title, overview] of [
+  ['/customers', 'Customers', 'No customers yet.'],
+  ['/deals?view=next-steps', 'Open deals', 'No open deals.'],
+]) {
+  test(`viewer opens the ${title} overview in the built client when sync is off`, {
+    timeout: 120_000, skip: !executable && 'No local Chrome or Chromium executable',
+  }, async (t) => {
+    const app = await startApp(t);
+    await app.api('PUT', '/api/wiser/people/viewer%40example.test', 204, { body: { role: 'viewer' } });
+    const browser = await chromePage(t, app.url, await app.personFor('viewer@example.test'));
+    await browser.navigate(path);
+    await waitFor(browser, `document.querySelector('main h1')?.textContent === ${JSON.stringify(title)}
+      && document.querySelector('main')?.textContent.includes(${JSON.stringify(overview)})`);
+    assert.equal(await browser.evaluate("document.querySelector('main').textContent.includes('Loading…')"), false);
+    assert.equal(await browser.evaluate("Boolean(document.querySelector('[aria-label=\"Dismiss error\"]'))"), false);
+  });
+}

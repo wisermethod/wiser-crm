@@ -192,7 +192,11 @@ const query = {
   '/api/values': '?entity=contact&field=email',
   '/api/views': '?entity=contact',
 };
-const syncReads = new Set(['/api/contacts/{id}/emails', '/api/email-sync', '/api/meetings/sync']);
+const syncReads = new Map([
+  ['/api/contacts/{id}/emails', '/api/contacts/contact/emails'],
+  ['/api/email-sync', '/api/email-sync'],
+  ['/api/meetings/sync', '/api/meetings/sync'],
+]);
 const httpMethods = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options', 'trace'];
 const isRead = (method) => method === 'GET' || method === 'HEAD';
 
@@ -262,7 +266,7 @@ scenario(7, 'first owner starts with no row, matches member app access, and writ
   t.diagnostic(`Compared ${routes.length} OpenAPI method and path pairs, including implicit HEAD requests.`);
 });
 
-scenario(8, 'viewer OpenAPI matrix matches member reads except three sync routes and refuses every write', async (app, t) => {
+scenario(8, 'viewer OpenAPI matrix matches every member read and refuses every write', async (app, t) => {
   await setRole(app, member, 'member');
   await setRole(app, viewer, 'viewer');
   await seedRouteRecords(app.crmDb);
@@ -274,16 +278,16 @@ scenario(8, 'viewer OpenAPI matrix matches member reads except three sync routes
     if (isRead(method)) {
       const comparison = await app.request(method, path, { token: memberToken });
       assert.ok(comparison.status < 500 && comparison.status !== 401, `Member ${method} ${path}: ${JSON.stringify(comparison.data)}`);
-      if (!syncReads.has(template)) {
-        assert.equal((await app.request(method, path, { token: viewerToken })).status, comparison.status, `${method} ${path}`);
-        continue;
+      assert.equal((await app.request(method, path, { token: viewerToken })).status, comparison.status, `${method} ${path}`);
+      if (syncReads.has(template)) {
+        encountered.add(template);
+        assert.equal(comparison.status, 200, `Member can read ${method} ${path}`);
       }
-      encountered.add(template);
-      assert.equal(comparison.status, 200, `Member can read ${method} ${path}`);
+      continue;
     }
     await refused(app, viewerToken, method, path, 403, viewerError);
   }
-  assert.deepEqual(encountered, syncReads);
+  assert.deepEqual(encountered, new Set(syncReads.keys()));
   t.diagnostic(`Checked ${routes.length} OpenAPI method and path pairs, including implicit HEAD requests.`);
 });
 
@@ -307,6 +311,7 @@ scenario(10, 'viewer cannot take in explicitly or on an HTML page open', async (
 scenario(12, 'decoded sync route and paths containing control characters are refused', async (app) => {
   await setRole(app, viewer, 'viewer');
   const token = await app.personFor(viewer);
+  await app.crmDb.prepare("INSERT INTO meeting_sync (id, enabled) VALUES (1, 1)").run();
   const encoded = '/api/contacts/contact/%65mails';
   assert.equal((await app.request('GET', encoded)).status, 200, 'owner reaches the encoded sync route');
   await refused(app, token, 'GET', encoded, 403, viewerError);
@@ -422,4 +427,105 @@ test('people API orders the list, rejects invalid requests and caps even a chunk
   });
   await refused(app, app.person, 'DELETE', path, 400, undefined, { body: { role: 'viewer' } });
   assert.deepEqual(await app.api('GET', roster, 200), list.data);
+});
+
+test('viewer sync GETs match member responses and leave records unchanged when sync is off', { timeout: 120_000 }, async (t) => {
+  const app = await startApp(t, appOptions);
+  await setRole(app, viewer, 'viewer');
+  await setRole(app, member, 'member');
+  await seedRouteRecords(app.crmDb);
+  await app.crmDb.prepare('INSERT INTO meeting_sync (id, enabled) VALUES (1, 0)').run();
+  const tables = ['contacts', 'companies', 'deals', 'activities', 'email_accounts', 'meeting_sync'];
+  const snapshot = () => Promise.all(tables.map((table) => rows(app.crmDb, table)));
+  const before = await snapshot();
+  const viewerToken = await app.personFor(viewer);
+  const memberToken = await app.personFor(member);
+  for (const path of syncReads.values()) {
+    const expected = await app.api('GET', path, 200, { token: memberToken });
+    assert.deepEqual(await app.api('GET', path, 200, { token: viewerToken }), expected, path);
+    assert.deepEqual(await snapshot(), before, path);
+  }
+});
+
+for (const [source, update] of [
+  ['email', 'UPDATE email_accounts SET enabled = ?'],
+  ['meeting', 'UPDATE meeting_sync SET enabled = ? WHERE id = 1'],
+]) {
+  test(`viewer sync reads are refused and member reads work when ${source} sync is on`, { timeout: 120_000 }, async (t) => {
+    const app = await startApp(t, appOptions);
+    await setRole(app, viewer, 'viewer');
+    await setRole(app, member, 'member');
+    await seedRouteRecords(app.crmDb);
+    await app.crmDb.prepare('INSERT INTO meeting_sync (id, enabled) VALUES (1, 0)').run();
+    const viewerToken = await app.personFor(viewer);
+    const memberToken = await app.personFor(member);
+    for (const enabled of [1, 2, 0]) {
+      await app.crmDb.prepare(update).bind(enabled).run();
+      t.diagnostic(`${source} sync enabled = ${enabled}`);
+      for (const path of syncReads.values()) {
+        for (const method of ['GET', 'HEAD']) {
+          await app.api(method, path, 200, { token: memberToken });
+          if (enabled) await refused(app, viewerToken, method, path, 403, viewerError);
+          else await app.api(method, path, 200, { token: viewerToken });
+        }
+      }
+    }
+  });
+}
+
+test('a failed sync settings read refuses viewer sync requests only', { timeout: 120_000 }, async (t) => {
+  const app = await startApp(t, appOptions);
+  await setRole(app, viewer, 'viewer');
+  await setRole(app, member, 'member');
+  await app.crmDb.prepare('DROP TABLE meeting_sync').run();
+  const viewerToken = await app.personFor(viewer);
+  const memberToken = await app.personFor(member);
+  for (const path of syncReads.values()) await refused(app, viewerToken, 'GET', path, 403, viewerError);
+  await app.api('GET', '/api/contacts', 200, { token: viewerToken });
+  await app.api('GET', '/api/email-sync', 200, { token: memberToken });
+});
+
+for (const [padding, suffix] of [['space', ' '], ['newline', '\n']]) {
+  test(`a signed address with a trailing ${padding} is refused without creating a row`, { timeout: 120_000 }, async (t) => {
+    const app = await startApp(t, { ...appOptions, ownerEmail: 'owner@example.com', checkOpenapi: false });
+    const token = await app.personFor('owner@example.com' + suffix);
+    const message = 'Your sign-in email must be one plain address.';
+    await refused(app, token, 'GET', '/', 403, message, { headers: browser });
+    await refused(app, token, 'GET', roster, 403, message);
+    assert.deepEqual(await rows(app.crmDb, 'wiser_people'), []);
+  });
+}
+
+test('a Kelvin sign in the signed address does not match the ASCII first owner', { timeout: 120_000 }, async (t) => {
+  const app = await startApp(t, { ...appOptions, ownerEmail: 'k@example.com', checkOpenapi: false });
+  const email = '\u212A@example.com';
+  const token = await app.personFor(email);
+  await refused(app, token, 'GET', roster, 403, 'Ask an owner to set your role.');
+  const [row] = await rows(app.crmDb, 'wiser_people');
+  assert.equal(row.email, email);
+  assert.equal(row.role, null);
+});
+
+test('a Kelvin sign in the signed address does not match an ASCII people row', { timeout: 120_000 }, async (t) => {
+  const app = await startApp(t, appOptions);
+  const ascii = 'k@example.com';
+  const email = '\u212A@example.com';
+  await setRole(app, ascii, 'member');
+  const token = await app.personFor(email);
+  await refused(app, token, 'GET', roster, 403, 'Ask an owner to set your role.');
+  await setRole(app, email, 'viewer');
+  assert.deepEqual((await app.api('GET', roster, 200, { token })).you, { email, role: 'viewer' });
+  assert.deepEqual((await app.api('GET', roster, 200, { token: await app.personFor(ascii) })).you,
+    { email: ascii, role: 'member' });
+});
+
+test('mixed-case owner cannot change the percent-encoded first owner', { timeout: 120_000 }, async (t) => {
+  const email = 'owner@example.com';
+  const app = await startApp(t, { ...appOptions, ownerEmail: email, checkOpenapi: false });
+  const token = await app.personFor('Owner@Example.com');
+  assert.deepEqual((await app.api('GET', roster, 200, { token })).you, { email, role: 'owner' });
+  const before = await rows(app.crmDb, 'wiser_people');
+  await refused(app, token, 'PUT', '/api/wiser/people/owner%40example.com', 403,
+    'The first owner is set at install.', { body: { role: 'viewer' } });
+  assert.deepEqual(await rows(app.crmDb, 'wiser_people'), before);
 });

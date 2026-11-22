@@ -13,9 +13,14 @@ export function isRole(value: unknown): value is Role {
   return roles.some((role) => role === value);
 }
 
+// Match SQLite lower(), which folds ASCII letters only.
+function lowerAsciiEmail(value: string): string {
+  return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
 export function plainEmail(value: unknown): string | null {
   return typeof value === "string" && /^[^@]+@[^@]+$/.test(value) && !/[\s\p{Cc}<>,;]/u.test(value)
-    ? value.toLowerCase()
+    ? lowerAsciiEmail(value)
     : null;
 }
 

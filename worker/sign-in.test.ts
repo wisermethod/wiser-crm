@@ -247,11 +247,12 @@ test("verified API, llms and status reads pass through without overblocking clea
 test("nbf, exp, token type, required identity, and key id are enforced", async () => {
   for (const claims of [
     { nbf: Math.floor(Date.now() / 1000) + 300 }, { exp: undefined }, { type: "org" },
-    { type: undefined }, { sub: undefined }, { sub: " " }, { email: undefined }, { email: " " },
+    { type: undefined }, { sub: undefined }, { sub: " " }, { email: undefined },
     { sub: "", common_name: undefined },
   ]) {
     await refused(harness(), 401, undefined, undefined, await token(claims));
   }
+  await refused(harness(), 403, undefined, undefined, await token({ email: " " }));
   await refused(harness(), 401, undefined, undefined, await token({}, privateKey, "unknown"));
   await refused(harness(), 401, undefined, undefined, await token({}, privateKey, ""));
   await refused(harness(), 401, undefined, undefined, "malformed");

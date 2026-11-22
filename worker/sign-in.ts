@@ -3,7 +3,7 @@ import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { withIdentity, type Identity } from "../runtime/app/identity.ts";
 import { findPerson, isReadMethod, mayWriteApp, plainEmail, type PeopleDatabase } from "../runtime/people/index.ts";
 import { installBrand, type BrandSettings } from "./brand.ts";
-import { isViewerSyncRead, isWritingGet } from "./get-routes.ts";
+import { isViewerSyncRead, isWritingGet, syncIsOff } from "./get-routes.ts";
 import { peoplePath, peopleResponse, refusal, waitForRole, type PeopleCaller } from "./people.ts";
 import type { TakeInCounts } from "./take-in.ts";
 import { releaseVersion } from "./version.ts";
@@ -97,7 +97,7 @@ export async function signIn<E extends AssetEnvironment, C>(
     });
     if (!protectedHeader.kid || payload.type !== "app") throw new Error("Invalid token");
     if (typeof payload.sub === "string" && payload.sub.trim()
-      && typeof payload.email === "string" && payload.email.trim()) {
+      && typeof payload.email === "string") {
       identity = { caller: "user", user: { id: payload.sub, email: payload.email } };
     } else if (payload.sub === "" && config.agentClientId
       && payload.common_name === config.agentClientId) {
@@ -130,7 +130,8 @@ export async function signIn<E extends AssetEnvironment, C>(
       return refusal(403, "An agent cannot supply a person identity.");
     }
   } else {
-    const email = identity.user.email.toLowerCase();
+    const email = plainEmail(identity.user.email);
+    if (!email) return refusal(403, "Your sign-in email must be one plain address.");
     if (email === firstOwner) {
       you = { email, role: "owner" };
     } else {
@@ -159,7 +160,8 @@ export async function signIn<E extends AssetEnvironment, C>(
   // Hono also runs GET handlers for HEAD.
   const readMethod = isReadMethod(request.method);
   if (readOnly && (!readMethod || isWritingGet(path))) return refusal(503, upgradeError);
-  if (you !== "agent" && !mayWriteApp(you.role) && (!readMethod || isViewerSyncRead(path))) {
+  if (you !== "agent" && !mayWriteApp(you.role)
+    && (!readMethod || (isViewerSyncRead(path) && !(await syncIsOff(env.DB))))) {
     return refusal(403, "Viewers can only read the CRM.");
   }
   if (path === peoplePath || path.startsWith(peoplePath + "/")) {
