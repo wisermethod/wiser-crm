@@ -3,6 +3,7 @@ import type { NewSubmission } from "./submissions.ts";
 export interface NoticeSettings {
   NOTICE?: SendEmail;
   NOTICE_FROM?: string;
+  NOTICE_FROM_NAME?: string;
   NOTICE_TO?: string;
   CRM_URL?: string;
 }
@@ -19,6 +20,12 @@ function subject(received: Date): string {
 
 function singleLine(value: string): string {
   return value.replace(/[\r\n\u2028\u2029]/g, "");
+}
+
+function senderName(value?: string): string {
+  if (typeof value !== "string" || /[\p{Cc}\u2028\u2029<>",;:@\\]/u.test(value)) return "Wiser CRM";
+  const name = singleLine(value).trim();
+  return name && [...name].length <= 60 ? name : "Wiser CRM";
 }
 
 function body(submission: NewSubmission, crmUrl?: string): string {
@@ -47,7 +54,7 @@ function errorCode(error: unknown): string {
 }
 
 export async function sendNotice(
-  { NOTICE: notice, NOTICE_FROM: from, NOTICE_TO: to, CRM_URL: crmUrl }: NoticeSettings,
+  { NOTICE: notice, NOTICE_FROM: from, NOTICE_FROM_NAME: fromName, NOTICE_TO: to, CRM_URL: crmUrl }: NoticeSettings,
   submission: NewSubmission,
   received: Date,
 ): Promise<NoticeOutcome> {
@@ -55,7 +62,7 @@ export async function sendNotice(
 
   const payload = {
     to,
-    from: { email: from, name: "Wiser CRM" },
+    from: { email: from, name: senderName(fromName) },
     subject: subject(received),
     text: body(submission, crmUrl),
   };

@@ -5,10 +5,12 @@ a Node version that can run the TypeScript unit tests directly. No test needs a
 Cloudflare account, a deploy, or a published Clawnify package. Do not install or
 open those packages; the fork uses its own `runtime/` links.
 
-Run every suite:
+Run every suite in sequence to avoid contention between the local Workers:
 
 ```bash
-WRANGLER_SEND_METRICS=false node --test tests/records.test.mjs tests/sign-in.e2e.test.mjs tests/instance.e2e.test.mjs tests/import.test.mjs tests/migrations.test.mjs tests/m2c-regressions.test.mjs tests/intake.e2e.test.mjs tests/intake-m1.e2e.test.mjs tests/intake-bundle.test.mjs intake/worker.test.ts intake/notice.test.mjs worker/sign-in.test.ts worker/instance.test.ts worker/dev/index.test.ts release/clawnify-free.test.mjs release/build.test.mjs release/upstream-report.test.mjs
+for suite in tests/*.test.mjs intake/*.test.* worker/*.test.* worker/dev/*.test.ts release/*.test.mjs; do
+  WRANGLER_SEND_METRICS=false node --test "$suite" || break
+done
 ```
 
 Run any suite individually:
@@ -23,12 +25,17 @@ WRANGLER_SEND_METRICS=false node --test tests/m2c-regressions.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/intake.e2e.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/intake-m1.e2e.test.mjs
 WRANGLER_SEND_METRICS=false node --test tests/intake-bundle.test.mjs
+node --test tests/theme.test.mjs
+node --test tests/theme-contrast.test.mjs
 node --test intake/worker.test.ts
 node --test intake/notice.test.mjs
 node --test worker/sign-in.test.ts
+node --test worker/brand.test.mjs
 node --test worker/instance.test.ts
 node --test worker/dev/index.test.ts
+node --test release/build.test.mjs
 node --test release/clawnify-free.test.mjs
+node --test release/sign.test.mjs
 node --test release/upstream-report.test.mjs
 ```
 
@@ -49,10 +56,13 @@ pnpm exec tsc --noEmit -p tsconfig.wiser.json
 | `tests/intake.e2e.test.mjs` | The public intake and CRM Workers share one intake D1, alongside the CRM's own D1. Covers the six fields a visitor types and the page path the form carries, take-in, claims, note read-back and retry, import parity, company isolation, routing, response privacy, read-only and retention. |
 | `tests/intake-m1.e2e.test.mjs` | The real intake and CRM Workers enforce the honeypot and both throttle caps, process leads oldest first in batches of up to 50, and erase visitor fields and expired throttle data. D1-backed fixtures exercise UTC rollover, failed notice notes and notices still in flight. |
 | `tests/intake-bundle.test.mjs` | Wrangler's dry-run metafile excludes CRM and Hono inputs. The intake config binds its D1 and one pinned mail destination, and the fork still edits ten upstream files. |
+| `tests/theme.test.mjs` | Resolves tokens in cascade order and checks `DESIGN.wiser.md`, the overlay selector rules, literal inlining and the primary pill's class pair. |
+| `tests/theme-contrast.test.mjs` | Checks all 152 Mist pairings against resolved light and dark CSS tokens, including text, focus, boundaries and decorative rules. Set `WISER_THEME_CONTRAST_REPORT=1` to print the ratio table. |
 | `intake/worker.test.ts` | The body cap stops reading even with a false length, the exact limit is accepted, malformed forms get a generic refusal, and missing configuration returns 503. |
-| `intake/notice.test.mjs` | A local send stand-in checks save-before-send, exact structured notice text and headers, the submitted page path and Referer fallback, configured recipient, outcomes, retry behavior and no send on throttled or honeypot posts. |
+| `intake/notice.test.mjs` | A local send stand-in checks save-before-send, exact structured notice text and headers, the submitted page path and Referer fallback, configured recipient, valid and malformed sender names, outcomes, retry behavior and no send on throttled or honeypot posts. |
 | `worker/sign-in.test.ts` | Wrapper policy in isolation with real token verification and runtime identity: all sign-in pass-list cases except bundle/install/count cases 7 to 9, plus algorithm restrictions, key rotation, configuration, concurrent identities, and downstream-call isolation. |
-| `worker/instance.test.ts` | Instance identity and unnamed refusal; authentication before policy; writable unset/empty/false and fail-closed flags; all 12 writing GET routes and their HEAD equivalents; downstream isolation and reads/assets during upgrades. |
+| `worker/brand.test.mjs` | Fits 223 colours to Mist’s accent roles in both modes, including greys and saturated boundary colours. Checks the brand’s independent validation and fallbacks. |
+| `worker/instance.test.ts` | Signed-in and unsigned brand responses, instance identity and unnamed refusal; authentication before policy; writable unset/empty/false and fail-closed flags; all 12 writing GET routes and their HEAD equivalents; downstream isolation and reads/assets during upgrades. |
 | `tests/instance.e2e.test.mjs` | Instance and upgrade policy through the real local Worker for staff and agent, plus an exact inventory of every live upstream GET route against the wrapper's read/write classification. Re-audit existing handlers and helpers when upstream changes them; the inventory catches new routes, not changed effects on an existing path. |
 | `tests/release-instance.test.mjs` | Optional real release-output check, run with `WISER_TEST_RELEASES` below: five required variables, F1 10, all release checks PASS, and the embedded version and verified caller through each emitted production Worker. |
 | `worker/dev/index.test.ts` | Local-host and enable-flag guards, local sign-in cookie behavior, cross-site refusal, assertion precedence, cookie removal, missing keys and invalid credentials. |

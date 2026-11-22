@@ -12,6 +12,8 @@ The chain starts here. Load this file before the first read or write under this 
 
 A fork of OpenCRM that carries upstream's full history. Upstream's files stay as upstream wrote them wherever that is possible, and what Wiser adds lives in files upstream does not have: this file and `CLAUDE.md`, the runtime library that stands in for Clawnify's platform packages under their names, the Worker entry that puts sign-in in front of the app, the build configuration, the migrations, the tests, and `.github/README.md`, each as it is added. Every upstream file this fork does change is counted, and the count stays within the limit the operator has set.
 
+`DESIGN.wiser.md` and `src/client/wiser-theme.css` govern the CRM's look. Put visual changes in the overlay and update the design reference to match. Keep upstream's `DESIGN.md` and `src/client/styles.css` as received.
+
 ## Upstream
 
 - The remote `clawnify` is fetch-only, and its push URL refuses. Never give it a push URL, and never open a pull request, issue or comment there: Wiser does not contact Clawnify.

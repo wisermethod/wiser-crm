@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkRelease } from './sign.mjs';
-import { APPS, CRM, INTAKE, INTAKE_INPUT, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, checkIntakeInputs } from './format3.mjs';
+import { APPS, BRAND_OPTIONAL_VARS, CRM, INTAKE, INTAKE_INPUT, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, checkIntakeInputs } from './format3.mjs';
 
 const CHECKS = ['lockfile', 'install_log', 'bundle_inputs'];
 const LABELS = ['LOCKFILE', 'INSTALL-LOG', 'BUNDLE-INPUTS'];
@@ -168,7 +168,8 @@ function collectMigrations(migrationsDir, store) {
 function application(app, { config, workerDir, mainModule, migrationsDir, table, assetsDir, bundleInputs }, store) {
   const spec = APPS[app];
   const intake = app === INTAKE;
-  const expectedVars = [...spec.required, ...spec.optional];
+  const optional = BRAND_OPTIONAL_VARS[app];
+  const expectedVars = [...spec.required, ...optional];
   const vars = Object.keys(config.vars ?? {});
   if (vars.length !== expectedVars.length || !expectedVars.every(name => vars.includes(name))) {
     throw new Error(`unsupported release configuration: ${app} install variables`);
@@ -209,7 +210,7 @@ function application(app, { config, workerDir, mainModule, migrationsDir, table,
       })),
     },
     bindings: { d1: spec.d1, mail: spec.mail },
-    vars: { required: spec.required, optional: spec.optional },
+    vars: { required: spec.required, optional },
     migrations: { database: spec.database, table, files: collectMigrations(migrationsDir, store) },
   };
 }

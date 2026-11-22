@@ -23,7 +23,8 @@
     "INTAKE_MAX_PER_HOUR": "60",
     "NOTICE_TO": "crm-inbox@example.com",
     "NOTICE_FROM": "notices@example.com",
-    "CRM_URL": "https://crm.example.com"
+    "CRM_URL": "https://crm.example.com",
+    "NOTICE_FROM_NAME": ""
   },
   "send_metrics": false
 }

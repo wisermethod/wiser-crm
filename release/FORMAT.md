@@ -62,7 +62,7 @@ illustrative.
     },
     "vars": {
       "required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD", "AGENT_CLIENT_ID", "WISER_INSTANCE", "WISER_READ_ONLY"],
-      "optional": []
+      "optional": ["BRAND_NAME", "BRAND_ACCENT"]
     },
     "migrations": {
       "database": "crm",
@@ -89,7 +89,7 @@ illustrative.
     },
     "vars": {
       "required": ["INTAKE_ORIGIN", "INTAKE_RETURN_URL", "NOTICE_TO", "NOTICE_FROM"],
-      "optional": ["INTAKE_MAX_PER_ADDRESS_PER_DAY", "INTAKE_MAX_PER_HOUR", "CRM_URL"]
+      "optional": ["INTAKE_MAX_PER_ADDRESS_PER_DAY", "INTAKE_MAX_PER_HOUR", "CRM_URL", "NOTICE_FROM_NAME"]
     },
     "migrations": {
       "database": "intake",
@@ -131,12 +131,15 @@ illustrative.
   ```
 
 - The variable declarations are exactly the names and required/optional
-  lists shown, in that order. Before the first install write, require values
+  lists shown, in that order. A format 3 release declares one of two variable
+  sets. In the 0.2.0 set, the CRM's optional list is empty and intake's is
+  `["INTAKE_MAX_PER_ADDRESS_PER_DAY", "INTAKE_MAX_PER_HOUR", "CRM_URL"]`.
+  The set shown above adds the brand variables. Both apps in a release must
+  use the same set. Before the first install write, require values
   for both apps' required inputs and refuse undeclared variable names.
-  Preserve the CRM's existing empty-string setting for `WISER_READ_ONLY`.
-  Omit an optional variable when the install omits it. The intake code has
-  defaults for the two throttle limits, and `CRM_URL` is an optional CRM
-  address for the notice. No default values are serialized.
+  Use the forms under [Install variables](#install-variables). Preserve the
+  CRM's existing empty-string setting for `WISER_READ_ONLY`. Omit an optional
+  variable when the install omits it. No default values are serialized.
 - The intake Worker is one bundled ECMAScript module. Its `bundle_inputs`
   list is the sorted, repository-relative Wrangler/esbuild input graph,
   including `intake/worker.ts`. Each input is an immediate `intake/` source
@@ -158,6 +161,33 @@ illustrative.
   names are unique within their list, and binding and variable names are
   unique within the Worker that uses them. Format 3 checks the documented
   ordering of all file lists.
+
+## Install variables
+
+The CRM uses these forms in formats 2 and 3. The brand variables are optional and appear in the newer format 3 set.
+
+| Variable | Form the Worker enforces | Code |
+| --- | --- | --- |
+| `ACCESS_TEAM_DOMAIN` | The full address `https://<team>.cloudflareaccess.com`. Use a lowercase team label of 1–63 ASCII letters, digits or hyphens with an alphanumeric first and last character. Supply exactly that address, with no port, trailing slash or other URL parts. Access assertions must use this issuer. | [`worker/sign-in.ts`](../worker/sign-in.ts) `isConfigured` and `signIn` |
+| `ACCESS_AUD` | A nonempty string of ASCII letters, digits, underscores or hyphens. Access assertions must include this audience. | [`worker/sign-in.ts`](../worker/sign-in.ts) `isConfigured` and `signIn` |
+| `AGENT_CLIENT_ID` | An empty or missing value disables agent sign-in only. For agent sign-in it must exactly match the verified assertion's `common_name` when its `sub` is empty. Staff sign-in is unaffected. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
+| `WISER_INSTANCE` | After verifying an Access assertion, `GET` and `HEAD /api/wiser/instance` return 503 if the name is empty or missing and report the value as supplied otherwise. Before this route, an unsigned request returns 401 when sign-in is configured, or 503 with `Sign-in is not configured.` when sign-in is unconfigured. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
+| `WISER_READ_ONLY` | An empty string or exactly `false` allows writes, as does an unset value at runtime. Every other value activates read-only mode. | [`worker/sign-in.ts`](../worker/sign-in.ts) `signIn` |
+| `BRAND_NAME` | 1–40 Unicode characters after trimming. Control characters, `<`, `>` and line breaks anywhere in the input are refused. An omitted or invalid value uses Wiser CRM in the navigation and page title. | [`worker/brand.ts`](../worker/brand.ts) `displayName` and `installBrand` |
+| `BRAND_ACCENT` | Exactly `#` followed by six ASCII hexadecimal digits. The CRM fits light and dark tones to Mist's surfaces. An omitted or invalid value uses Mist's teal. | [`worker/brand.ts`](../worker/brand.ts) `installBrand` and `fitAccent` |
+
+Format 3 also declares these intake Worker variables.
+
+| Variable | Form the Worker enforces | Code |
+| --- | --- | --- |
+| `INTAKE_ORIGIN` | A nonempty string that exactly matches the request's `Origin` header. The literal `null` is refused. | [`intake/worker.ts`](../intake/worker.ts) `fetch` |
+| `INTAKE_RETURN_URL` | A nonempty string accepted as the HTTP `Location` header value for the 303 response. The Worker applies the header constructor's checks without parsing the value as a URL. | [`intake/worker.ts`](../intake/worker.ts) `fetch` and `reply` |
+| `NOTICE_TO` | A missing or empty value skips the notice. Any other string is passed as the destination to the mail binding without a syntax check. If sending ultimately fails, the Worker records a failed notice. | [`intake/notice.ts`](../intake/notice.ts) `sendNotice` |
+| `NOTICE_FROM` | A missing or empty value skips the notice. Any other string is passed as the sender's email to the mail binding without a syntax check. If sending ultimately fails, the Worker records a failed notice. | [`intake/notice.ts`](../intake/notice.ts) `sendNotice` |
+| `INTAKE_MAX_PER_ADDRESS_PER_DAY` | A value that converts via `Number()` to a positive safe integer. Missing or rejected values use 5. | [`intake/throttle.ts`](../intake/throttle.ts) `limit` and `saveWithinThrottle` |
+| `INTAKE_MAX_PER_HOUR` | A value that converts via `Number()` to a positive safe integer. Missing or rejected values use 60. | [`intake/throttle.ts`](../intake/throttle.ts) `limit` and `saveWithinThrottle` |
+| `CRM_URL` | If supplied and nonempty, the text is appended to the notice after removing CR, LF, U+2028 and U+2029. The Worker applies no URL syntax check. | [`intake/notice.ts`](../intake/notice.ts) `sendNotice`, `body` and `singleLine` |
+| `NOTICE_FROM_NAME` | Optional in the newer format 3 set. 1–60 Unicode characters after trimming. Control characters, line breaks, angle brackets, double quotes, commas, semicolons, colons, at signs and backslashes anywhere in the input are refused. An omitted or invalid value uses Wiser CRM as the sender name. | [`intake/notice.ts`](../intake/notice.ts) `senderName` and `sendNotice` |
 
 ## Format 2
 
@@ -250,12 +280,11 @@ filenames rather than introducing a second migration history.
 
 ## Format 2 changes from format 1
 
-`WISER_INSTANCE` is the install's connection label, returned after verification
-by `GET /api/wiser/instance`, which returns 503 when the name is empty or unset.
-`WISER_READ_ONLY` stops writing methods and writing GET/HEAD routes during an
-upgrade whenever its value is set and is neither empty nor exactly `false`.
-The instance response also reports the verified caller, the read-only boolean
-and the release version embedded by `release/build.mjs`; other builds use `dev`.
+`WISER_INSTANCE` is the install's connection label. The instance response
+reports it alongside the verified caller, the read-only boolean and the
+release version embedded by `release/build.mjs`. Other builds use `dev`.
+`WISER_READ_ONLY` stops writing methods and writing GET/HEAD routes during
+an upgrade. See [Install variables](#install-variables) for the accepted values.
 
 1. `format` becomes 2 because a format-1 validator rejects both the new fields
    and any migration. The provisional connector proof needs a format-2 consumer

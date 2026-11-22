@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, createPrivateKey, createPublicKey, sign, verify, webcrypto } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { APPS, CRM, INTAKE, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, sameList, checkIntakeInputs } from './format3.mjs';
+import { APPS, OPTIONAL_VARIABLE_SETS, CRM, INTAKE, MIGRATION_TABLE, MIGRATION_NAME, compareMigrations, sameList, checkIntakeInputs } from './format3.mjs';
 
 const APP = CRM;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
@@ -154,7 +154,6 @@ function checkBindings(app, entry, spec) {
   if (!orderedShape(vars, ['required', 'optional']) || !sameList(vars.required, spec.required)) {
     throw new Error(`release ${app} required variable declarations malformed`);
   }
-  if (!sameList(vars.optional, spec.optional)) throw new Error(`release ${app} optional variable declarations malformed`);
 }
 
 function checkedManifest3(manifest, input) {
@@ -186,6 +185,9 @@ function checkedManifest3(manifest, input) {
     if (migrations.table !== MIGRATION_TABLE || !Array.isArray(migrations.files)) throw new Error(`release ${app} migrations malformed`);
     if (migrations.files[0]?.name !== spec.baseline) throw new Error(`release ${app} baseline migration must be ${spec.baseline}`);
     tracker.add(worker, assets, migrations, true);
+  }
+  if (!OPTIONAL_VARIABLE_SETS.some(set => [CRM, INTAKE].every(app => sameList(manifest.apps[app].vars.optional, set[app])))) {
+    throw new Error('release optional variable declarations must match one complete format 3 set');
   }
   const intake = manifest.apps[INTAKE].worker;
   return { files: tracker.files, intake: { digest: intake.modules[0].sha256, inputs: intake.bundle_inputs } };

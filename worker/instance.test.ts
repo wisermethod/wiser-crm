@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
+import { fitAccent, type BrandSettings } from "./brand.ts";
 import { signIn } from "./sign-in.ts";
 
 const configuration = { teamDomain: "https://local.cloudflareaccess.com", audience: "local", agentClientId: "agent" };
@@ -12,9 +13,9 @@ async function mint(agent = false) {
     .setAudience(configuration.audience).setExpirationTime("5m").sign(keys.privateKey);
 }
 const staff = await mint(), agent = await mint(true);
-function harness(flag?: string, instance: string | undefined = "test-install") {
+function harness(flag?: string, instance: string | undefined = "test-install", brand: BrandSettings = {}) {
   let appCalls = 0, assetCalls = 0;
-  const env = { WISER_INSTANCE: instance, WISER_READ_ONLY: flag, ASSETS: { async fetch() { assetCalls++; return new Response("asset"); } } };
+  const env = { ...brand, WISER_INSTANCE: instance, WISER_READ_ONLY: flag, ASSETS: { async fetch() { assetCalls++; return new Response("asset"); } } };
   return {
     calls: () => [appCalls, assetCalls],
     fetch(path: string, method = "GET", credential: string | null = staff, headers = {}) {
@@ -24,6 +25,30 @@ function harness(flag?: string, instance: string | undefined = "test-install") {
     },
   };
 }
+test("brand is served after sign-in with no caching and stays in the wrapper", async () => {
+  const path = "/api/wiser/brand";
+  const h = harness("true", "", { BRAND_NAME: " Northwind Studio ", BRAND_ACCENT: "#7a4bd6" });
+  assert.equal((await h.fetch(path, "GET", null)).status, 401);
+  const branded = await h.fetch(path);
+  assert.equal(branded.status, 200);
+  assert.equal(branded.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await branded.json(), { name: "Northwind Studio", accent: fitAccent("#7a4bd6") });
+  const head = await h.fetch(path, "HEAD");
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.deepEqual(h.calls(), [0, 0]);
+});
+
+test("brand uses defaults with absent variables or a malformed name and accent", async () => {
+  for (const vars of [{}, { BRAND_NAME: "<em>fake</em>", BRAND_ACCENT: "blue" }]) {
+    const response = await harness(undefined, "", vars).fetch("/api/wiser/brand");
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.doesNotMatch(body, /<em>/);
+    assert.deepEqual(JSON.parse(body), { name: "Wiser CRM", accent: null });
+  }
+});
+
 const error = { error: "The CRM is read-only during an upgrade." };
 const writingGets = [
   "/api/stats", "/api/stages", "/api/deals", "/api/deals/board", "/api/deals/progress", "/api/deals/1",

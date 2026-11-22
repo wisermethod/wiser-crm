@@ -18,7 +18,7 @@ test('6: the public intake bundle excludes CRM modules and Hono and binds only i
   assert.deepEqual(Object.keys(config).filter((key) => !configFields.includes(key)), []);
   assert.deepEqual(Object.keys(config.vars).sort(), [
     'CRM_URL', 'INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'INTAKE_ORIGIN', 'INTAKE_RETURN_URL',
-    'NOTICE_FROM', 'NOTICE_TO',
+    'NOTICE_FROM', 'NOTICE_FROM_NAME', 'NOTICE_TO',
   ]);
   assert.deepEqual(config.send_email, [{ name: 'NOTICE', destination_address: config.vars.NOTICE_TO }]);
   assert.deepEqual(config.d1_databases.map((db) => db.binding), ['INTAKE_DB']);

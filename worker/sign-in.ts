@@ -1,6 +1,7 @@
 import { getPath } from "hono/utils/url";
 import { jwtVerify, type JWTVerifyGetKey } from "jose";
 import { withIdentity, type Identity } from "../runtime/app/identity.ts";
+import { installBrand, type BrandSettings } from "./brand.ts";
 import { isWritingGet } from "./get-routes.ts";
 import type { TakeInCounts } from "./take-in.ts";
 import { releaseVersion } from "./version.ts";
@@ -18,7 +19,7 @@ export function isConfigured(config: SignInConfiguration): boolean {
     && /^[A-Za-z0-9_-]+$/.test(config.audience);
 }
 
-interface AssetEnvironment {
+interface AssetEnvironment extends BrandSettings {
   ASSETS: { fetch(request: Request): Promise<Response> };
   WISER_INSTANCE?: string;
   WISER_READ_ONLY?: string;
@@ -124,6 +125,12 @@ export async function signIn<E extends AssetEnvironment, C>(
     return Response.json({ instance: env.WISER_INSTANCE, version: releaseVersion, caller: identity.caller, read_only: readOnly }, {
       headers: { "Cache-Control": "no-store" },
     });
+  }
+  if ((request.method === "GET" || request.method === "HEAD") && path === "/api/wiser/brand") {
+    const headers = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
+    return request.method === "HEAD"
+      ? new Response(null, { headers })
+      : Response.json(installBrand(env), { headers });
   }
   // Hono runs GET handlers for HEAD too. Apply this before every existing
   // app/asset policy so no downstream code runs for an upgrade-time write.

@@ -19,6 +19,9 @@ import { EmailSyncPage } from "./components/email-sync/email-sync-page";
 import { CustomersPage } from "./components/customers/customers-page";
 import { MeetingsSettingsPage } from "./components/meetings/meetings-settings-page";
 import { RecordPanel, RecordPanelHeader } from "./components/record-page";
+import { defaultBrandName, useInstallBrand } from "./install-brand";
+import "./styles.css";
+import "./wiser-theme.css";
 
 // One definition of the navigation. <AppNav> paints it as this app's own
 // sidebar when opened directly, and hands it to the Clawnify dashboard's
@@ -46,6 +49,7 @@ function activeFor(route: Route): string {
 }
 
 export function App() {
+  const brandName = useInstallBrand();
   const isAgent = document.documentElement.hasAttribute("data-agent");
   const state = useCrmState(isAgent);
   const { path, route, navigate } = useRouter();
@@ -92,7 +96,9 @@ export function App() {
             <PanelLeft className="size-4" />
           </button>
           <AppNav
-            title="Wiser CRM"
+            title={brandName ?? defaultBrandName}
+            brandPending={brandName === null}
+            brandAttribution={brandName && brandName !== defaultBrandName ? defaultBrandName : undefined}
             icon="contact"
             groups={groups}
             active={activeFor(route)}

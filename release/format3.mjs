@@ -3,13 +3,22 @@ export const CRM = 'wiser-crm';
 export const INTAKE = 'wiser-crm-intake';
 export const NOTICE = Object.freeze({ name: 'NOTICE', destination_var: 'NOTICE_TO', sender_var: 'NOTICE_FROM' });
 
+const intakeOptional = ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'];
+export const BRAND_OPTIONAL_VARS = {
+  [CRM]: ['BRAND_NAME', 'BRAND_ACCENT'],
+  [INTAKE]: [...intakeOptional, 'NOTICE_FROM_NAME'],
+};
+export const OPTIONAL_VARIABLE_SETS = [
+  { [CRM]: [], [INTAKE]: intakeOptional },
+  BRAND_OPTIONAL_VARS,
+];
+
 export const APPS = {
   [CRM]: {
     database: 'crm',
     d1: [{ name: 'DB', database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }],
     mail: [],
     required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'],
-    optional: [],
     baseline: '0001_baseline.sql',
   },
   [INTAKE]: {
@@ -17,7 +26,6 @@ export const APPS = {
     d1: [{ name: 'INTAKE_DB', database: 'intake' }],
     mail: [NOTICE],
     required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', NOTICE.destination_var, NOTICE.sender_var],
-    optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'],
     baseline: '0001_intake.sql',
   },
 };

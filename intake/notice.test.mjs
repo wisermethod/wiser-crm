@@ -216,3 +216,24 @@ test("a throttle refusal never calls the configured mail binding", async (t) => 
   assert.deepEqual(sent, []);
   assert.deepEqual(outcomes, []);
 });
+
+test("the intake uses a trimmed custom sender name through the notice binding", async (t) => {
+  const { env, request, sent, assertOutcome } = setup(t);
+  assertRedirect(await worker.fetch(request(), { ...env, NOTICE_FROM_NAME: "  Northwind Studio  " }));
+  assert.deepEqual(sent, [{ ...structuredNotice, from: { email: sender, name: "Northwind Studio" } }]);
+  assertOutcome("sent");
+});
+
+for (const [kind, name] of [
+  ["blank", "  "], ["too long", "x".repeat(61)], ["CR", "Northwind\r"],
+  ["LF", "Northwind\nBcc"], ["Unicode line break", "Northwind\u2028Studio"],
+  ["angle brackets", "Studio <sender>"], ["C1 control", "Northwind\u0085"],
+  ...[">", '"', ",", ";", ":", "@", "\\"].map(char => [`punctuation ${char}`, `Northwind${char} Studio`]),
+]) {
+  test(`an invalid sender name (${kind}) leaves the default and sends normally`, async (t) => {
+    const { env, request, sent, assertOutcome } = setup(t);
+    assertRedirect(await worker.fetch(request(), { ...env, NOTICE_FROM_NAME: name }));
+    assert.deepEqual(sent, [structuredNotice]);
+    assertOutcome("sent");
+  });
+}

@@ -1,9 +1,10 @@
 import { createRemoteJWKSet } from "jose";
 import app from "../src/server/index.js";
+import type { BrandSettings } from "./brand.ts";
 import { isConfigured, signIn, type SignInConfiguration } from "./sign-in.ts";
 import { takeIn } from "./take-in.ts";
 
-interface Environment {
+interface Environment extends BrandSettings {
   DB: D1Database;
   INTAKE_DB?: D1Database;
   ASSETS: Fetcher;

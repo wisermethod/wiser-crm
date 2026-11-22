@@ -112,14 +112,14 @@ test('format 3 assembly matches FORMAT.md byte for byte and passes the checker',
         worker: { main_module: 'index.js', compatibility_date: '2025-04-01', compatibility_flags: ['nodejs_compat'], modules: [module('data.bin', 'application/octet-stream', Buffer.from([0, 1, 255])), module('index.js', 'application/javascript+module', 'export default {};\n')] },
         assets: { binding: 'ASSETS', config: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application', run_worker_first: true }, files: [asset('/assets/app.js', 'application/javascript', 'export default {};\n'), asset('/index.html', 'text/html; charset=utf-8', '<h1>fixture</h1>\n')] },
         bindings: { d1: [{ name: 'DB', database: 'crm' }, { name: 'INTAKE_DB', database: 'intake' }], mail: [] },
-        vars: { required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], optional: [] },
+        vars: { required: ['ACCESS_TEAM_DOMAIN', 'ACCESS_AUD', 'AGENT_CLIENT_ID', 'WISER_INSTANCE', 'WISER_READ_ONLY'], optional: ['BRAND_NAME', 'BRAND_ACCENT'] },
         migrations: { database: 'crm', table: 'd1_migrations', files: [ref('0001_baseline.sql', 'SELECT 1;\n'), ref('0002_next.sql', 'SELECT 2;\n'), ref('0010_later.sql', 'SELECT 10;\n')] },
       },
       'wiser-crm-intake': {
         worker: { main_module: 'worker.js', compatibility_date: '2025-04-01', compatibility_flags: [], modules: [module('worker.js', 'application/javascript+module', f.intakeSource)], bundle_inputs: ['intake/notice.ts', 'intake/worker.ts'] },
         assets: null,
         bindings: { d1: [{ name: 'INTAKE_DB', database: 'intake' }], mail: [{ name: 'NOTICE', destination_var: 'NOTICE_TO', sender_var: 'NOTICE_FROM' }] },
-        vars: { required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', 'NOTICE_TO', 'NOTICE_FROM'], optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL'] },
+        vars: { required: ['INTAKE_ORIGIN', 'INTAKE_RETURN_URL', 'NOTICE_TO', 'NOTICE_FROM'], optional: ['INTAKE_MAX_PER_ADDRESS_PER_DAY', 'INTAKE_MAX_PER_HOUR', 'CRM_URL', 'NOTICE_FROM_NAME'] },
         migrations: { database: 'intake', table: 'd1_migrations', files: [ref('0001_intake.sql', 'SELECT 3;\n')] },
       },
     },
@@ -218,4 +218,24 @@ test('assembly refuses an app source planted in the intake bundle bytes alone', 
   f.write('intake-worker/worker.js', '// ../src/server/index.ts\nconst crm = 1;\n' + f.intakeSource);
   assert.throws(() => assemble(f.options), /source sections/);
   assert.equal(fs.existsSync(f.options.release), false);
+});
+
+test('the checker still accepts the 0.2.0 variable set and refuses mixed or reordered lists', t => {
+  const f = assemblyFixture(t);
+  const release = path.join(path.dirname(f.options.release), '0.2.0');
+  assemble({ ...f.options, version: '0.2.0', release });
+  const manifestFile = path.join(release, 'manifest.json');
+  const { manifest } = checkRelease(release);
+  const crmVars = manifest.apps['wiser-crm'].vars;
+  const intakeVars = manifest.apps['wiser-crm-intake'].vars;
+  const write = () => fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+  crmVars.optional = [];
+  write();
+  assert.throws(() => checkRelease(release), /optional variable declarations/);
+  intakeVars.optional.pop();
+  write();
+  assert.deepEqual(checkRelease(release).manifest, manifest);
+  intakeVars.optional.reverse();
+  write();
+  assert.throws(() => checkRelease(release), /optional variable declarations/);
 });

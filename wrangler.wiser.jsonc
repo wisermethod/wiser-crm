@@ -24,6 +24,8 @@
     "ACCESS_AUD": "",
     "AGENT_CLIENT_ID": "",
     "WISER_INSTANCE": "",
-    "WISER_READ_ONLY": ""
+    "WISER_READ_ONLY": "",
+    "BRAND_NAME": "",
+    "BRAND_ACCENT": ""
   }
 }

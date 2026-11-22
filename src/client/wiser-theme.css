@@ -1,0 +1,223 @@
+/* Mist: near-white, cool grey dividers and a deep Wiser teal action. */
+:root {
+  color-scheme: light;
+  --background: #fafaf9;
+  --foreground: #303537;
+  --card: #fefefd;
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: #f0f2f0;
+  --secondary-foreground: var(--foreground);
+  --muted: var(--secondary);
+  --muted-foreground: #555f62;
+  --faint: #626c6d;
+  --accent: var(--secondary);
+  --accent-foreground: var(--foreground);
+  --sidebar: var(--secondary);
+  --sidebar-foreground: var(--foreground);
+
+  --primary: #225950;
+  --primary-foreground: #eff8f4;
+  --primary-hover: #2b665b;
+  --primary-edge: var(--primary);
+  --primary-text: var(--primary);
+  --primary-focus-inner: #a3ddce;
+  --cat-neutral-solid: oklch(0.61 0.007 85);
+  --destructive-hover: #88464a;
+  --destructive-foreground: #faf0ed;
+
+  --accent-brand: #177a6f;
+  --accent-text: #23665c;
+  --accent-tint: #e3f0ec;
+  --sidebar-accent: var(--accent-tint);
+  --sidebar-accent-foreground: var(--accent-text);
+  --link: var(--foreground);
+  --ring: #277a6e;
+  --ring-halo: var(--ring);
+
+  --border: #dce2e0;
+  --rule: #e8edeb;
+  --sidebar-border: var(--border);
+  --input: #788384;
+  --edge-rest: inset 0 0 0 1px var(--border);
+  --edge-raised: var(--edge-rest), 0 1px 2px #3035370d;
+  --edge-float: var(--edge-rest), 0 5px 18px #3035371a;
+  --shadow-solid: inset 0 0 0 1px var(--primary-edge);
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --radius-pill: 999px;
+  --dialog-scrim: #2027295c;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #232729;
+  --foreground: #ebeeeb;
+  --card: #2b3133;
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: #1e2224;
+  --secondary-foreground: var(--foreground);
+  --muted: var(--secondary);
+  --muted-foreground: #b2bfc0;
+  --faint: #a6b4b4;
+  --accent: var(--secondary);
+  --accent-foreground: var(--foreground);
+  --sidebar: var(--secondary);
+  --sidebar-foreground: var(--foreground);
+
+  --primary: #194c44;
+  --primary-foreground: #e9f5ef;
+  --primary-hover: #205b50;
+  --primary-edge: #789f96;
+  --primary-text: var(--accent-text);
+  --primary-focus-inner: var(--ring);
+  --cat-neutral-solid: oklch(0.6 0.006 85);
+  --destructive-hover: #773d43;
+  --destructive-foreground: #f6e8e4;
+
+  --accent-brand: #7bc7b9;
+  --accent-text: #9dd5ca;
+  --accent-tint: #2a433f;
+  --sidebar-accent: var(--accent-tint);
+  --sidebar-accent-foreground: var(--accent-text);
+  --link: var(--foreground);
+  --ring: #82cabc;
+  --ring-halo: var(--ring);
+
+  --border: #3b4547;
+  --rule: #30383a;
+  --sidebar-border: var(--border);
+  --input: #819091;
+  --edge-rest: inset 0 0 0 1px var(--border);
+  --edge-raised: var(--edge-rest), 0 1px 2px #10141638;
+  --edge-float: var(--edge-rest), 0 6px 20px #1014164d;
+  --shadow-solid: inset 0 0 0 1px var(--primary-edge);
+  --dialog-scrim: #13181980;
+}
+
+/* Upstream sets the body family directly and sizes the fixed record grid literally. */
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+}
+:is(h1, [role="dialog"] h2).font-semibold { font-weight: 560; }
+table.table-fixed, table.table-fixed th { font-size: 0.875rem; line-height: 1.45; }
+table.table-fixed :is(th, td).text-right { font-variant-numeric: tabular-nums; }
+/* Let the phone column retain full tabular numbers at its shipped width. */
+table.table-fixed td > span.tabular { font-size: 0.8125rem; }
+
+/* Navigation paint is hard-coded upstream, including the runtime icon palette. */
+:is(:root, .dark) aside.cn-nav :is(a.cn-nav-brand, .cn-nav-item):hover { background: var(--card); }
+aside.cn-nav .cn-nav-item .cn-nav-icon { color: var(--muted-foreground); }
+:is(:root, .dark) aside.cn-nav a.cn-nav-item[data-active] {
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+aside.cn-nav .cn-nav-item[data-active] :is(.cn-nav-icon, .cn-nav-count) {
+  color: var(--sidebar-accent-foreground);
+}
+aside.cn-nav a.cn-nav-brand:focus-visible { outline-offset: -2px; }
+
+/* Inline links share the info token with badges, and the link utility is absent. */
+a:is(.text-info, .text-link) {
+  color: var(--link);
+  text-decoration-line: underline;
+  text-underline-offset: 0.13em;
+}
+
+/* The static resting edge is also used on widgets. Give only the controls a
+   stronger inset, including the filter chips, table tools and button variants. */
+:is(input, textarea, select, button).shadow-edge,
+:is(button, a, [role="button"]).shadow-raised {
+  box-shadow: inset 0 0 0 1px var(--input);
+}
+[role="radio"][aria-checked="false"] > .border-border,
+button.border-border:is(.border, .border-dashed) { border-color: var(--input); }
+
+/* The two select triggers hard-code their chevrons to 50% opacity. */
+button[role="combobox"].shadow-edge > svg.opacity-50,
+button.shadow-edge > svg.lucide-chevrons-up-down.opacity-50 { opacity: 0.75; }
+
+/* Keep native checkbox glyphs. Supply the missing empty-box fill and edge. */
+@media (forced-colors: none) {
+  input[type="checkbox"]:enabled { accent-color: var(--accent-text); }
+  input[type="checkbox"]:enabled:not(:checked, :indeterminate) {
+    appearance: none;
+    min-inline-size: 13px;
+    min-block-size: 13px;
+    background-color: var(--card);
+    border: 1px solid var(--input);
+    border-radius: 3px;
+  }
+}
+
+/* Record rows, the pinned name cell and selected Radix options share the tint. */
+table.table-fixed tr[data-state="selected"],
+table.table-fixed tr[data-state="selected"] > td.sticky:first-child,
+[role="option"][data-state="checked"],
+[cmdk-item][data-selected="true"] { background-color: var(--accent-tint); }
+table.table-fixed tr[data-state="selected"] > td.sticky:first-child {
+  box-shadow: inset 2px 0 var(--ring), inset -1px 0 var(--rule);
+}
+
+/* The board utilities otherwise blend the ring down to 15% or 30%. */
+.ring-ring\/15, .ring-ring\/30 { --tw-ring-color: var(--ring); }
+
+/* Contact detail's toolbar exposes Add note as an outline icon. Use the primary
+   treatment while its note or meeting form is closed, leaving the submit
+   action to take over as the primary when the form opens. */
+aside:not(:has(#note-body, #meeting-title)) button[aria-label="Add note"].shadow-raised {
+  color: var(--primary-foreground);
+  background-color: var(--primary);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-solid);
+}
+
+/* The default Button variant uses a literal radius and a translucent hover. */
+.bg-primary.text-primary-foreground { border-radius: var(--radius-pill); }
+.text-primary:not(.bg-primary) { color: var(--primary-text); }
+@media (hover: hover) {
+  aside:not(:has(#note-body, #meeting-title)) button[aria-label="Add note"].shadow-raised:hover,
+  .bg-primary.text-primary-foreground:hover { background-color: var(--primary-hover); }
+  .hover\:bg-destructive-solid:hover { background-color: var(--destructive-hover); }
+}
+
+/* Full-opacity keyboard focus even where upstream sets a translucent default
+   or suppresses the outline. The primary gets a second edge inside its fill. */
+:where(a[href], button, input, select, textarea, [tabindex], [contenteditable]):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+:is(input, textarea, select, button).shadow-edge:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+aside:not(:has(#note-body, #meeting-title)) button[aria-label="Add note"].shadow-raised:focus-visible,
+.bg-primary.text-primary-foreground:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--primary-focus-inner);
+}
+@media (forced-colors: active) {
+  :where(a[href], button, input, select, textarea, [tabindex], [contenteditable]):focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+/* Radix's backdrop has a literal black mix. Its dialog surface shares card paint. */
+.fixed.inset-0.bg-black\/60.backdrop-blur-sm {
+  background-color: var(--dialog-scrim);
+  backdrop-filter: blur(2px);
+}
+[role="dialog"].shadow-float.bg-background { background-color: var(--popover); }
+[role="dialog"].shadow-float, .fixed.inset-0.bg-black\/60.backdrop-blur-sm {
+  animation-duration: 140ms;
+  --tw-enter-scale: 1;
+  --tw-exit-scale: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  [role="dialog"].shadow-float, .fixed.inset-0.bg-black\/60.backdrop-blur-sm {
+    animation: none;
+  }
+}

@@ -12,6 +12,8 @@ export interface AppNavItem {
 
 export interface AppNavProps {
   title: string;
+  brandPending?: boolean;
+  brandAttribution?: string;
   icon?: string;
   groups: { label?: string; items: AppNavItem[] }[];
   active?: string;
@@ -25,6 +27,9 @@ const styles = `
 .cn-nav-groups{flex:1;overflow:auto}
 .cn-nav-item svg,.cn-nav-brand svg{width:1.125rem;height:1.125rem;flex-shrink:0}
 .cn-nav-label{overflow:hidden;text-overflow:ellipsis}
+.cn-nav-brand-copy{min-width:0;line-height:1.25}
+.cn-nav-brand-copy > span{display:block;overflow:hidden;text-overflow:ellipsis}
+.cn-nav-brand-copy > small{display:block;font-size:.75rem;font-weight:500;color:var(--muted-foreground)}
 .cn-nav-count{margin-left:auto}
 .cn-nav-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--nav-icon-color,currentColor)}
 .cn-nav-footer{flex-shrink:0}
@@ -58,7 +63,7 @@ function Icon({ name }: { name?: string }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name ?? "contact"] ?? paths.contact} /></svg>;
 }
 
-export function AppNav({ title, icon, groups, active, onNavigate }: AppNavProps) {
+export function AppNav({ title, brandPending, brandAttribution, icon, groups, active, onNavigate }: AppNavProps) {
   const home = groups.flatMap((group) => group.items).find((item) => item.home);
   const navigate = (event: MouseEvent<HTMLAnchorElement>, item: AppNavItem) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -67,8 +72,11 @@ export function AppNav({ title, icon, groups, active, onNavigate }: AppNavProps)
   };
   return <aside className="cn-nav" aria-label={`${title} navigation`}>
     <style>{styles}</style>
-    <a className="cn-nav-brand" href={home?.href ?? "/"} onClick={(event) => navigate(event, home ?? { id: "home", label: title, href: "/" })} title={title}>
-      <Icon name={icon} /><span className="cn-nav-label">{title}</span>
+    <a className="cn-nav-brand" href={home?.href ?? "/"} onClick={(event) => navigate(event, home ?? { id: "home", label: title, href: "/" })} title={brandPending ? undefined : title} aria-label={brandPending ? "Home" : undefined}>
+      <Icon name={icon} />
+      {brandAttribution ? (
+        <span className="cn-nav-label cn-nav-brand-copy"><span>{title}</span><small>{brandAttribution}</small></span>
+      ) : <span className="cn-nav-label">{brandPending ? "" : title}</span>}
     </a>
     <nav className="cn-nav-groups" aria-label="Main">
       {groups.map((group, index) => <div className="cn-nav-group" key={group.label ?? index}>
