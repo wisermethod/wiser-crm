@@ -270,6 +270,39 @@ test('a second owner changes other people and not their own row', browserOptions
     'another person stays editable');
 });
 
+test('a second owner adding their own address is refused and stays an owner', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'owner' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/settings/people');
+  await waitFor(browser, "Boolean(document.querySelector('main tbody tr'))");
+  await clickElement(browser, exactText('main header button', 'Add person'));
+  await waitFor(browser, "document.activeElement === document.querySelector('[role=dialog] input[autocomplete=email]')");
+  await browser.type('Jane@Example.Test');
+  await clickElement(browser, exactText('[role=dialog] button[type=submit]', 'Add person'));
+  await waitFor(browser, `document.querySelector('[aria-label="Dismiss error"]')?.previousElementSibling.textContent === "You can't change your own access. Ask another owner."`);
+  const result = await app.api('GET', roster, 200);
+  assert.equal(result.people.find((person) => person.email === email).role, 'owner');
+  assert.equal(await browser.evaluate(`Boolean(${exactText('main header button', 'Add person')})`), true, 'still an owner on screen');
+});
+
+test('an owner demoted while their screen is open loses the controls at their next change', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'owner' } });
+  await app.api('PUT', '/api/wiser/people/other%40example.test', 204, { body: { role: 'member' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/settings/people');
+  await waitFor(browser, "document.querySelectorAll('main tbody tr').length >= 3");
+  await app.api('PUT', janePath, 204, { body: { role: 'member' } });
+  const other = "[...document.querySelectorAll('main tbody tr')].find(row => row.innerText.includes('other@example.test'))";
+  await clickElement(browser, `(${other})?.querySelector('[role=combobox]')`);
+  await clickElement(browser, exactText('[role=option]', 'Viewer'));
+  await waitFor(browser, "!document.querySelector('main [role=combobox]') && !document.querySelector('main header button')");
+  assert.equal(await browser.evaluate(`document.querySelector('[aria-label="Dismiss error"]')?.previousElementSibling.textContent`), 'Only an owner can change people.');
+  const result = await app.api('GET', roster, 200);
+  assert.equal(result.people.find((person) => person.email === 'other@example.test').role, 'member');
+});
+
 test('a viewer submitting Add contact sees the approved refusal in the app banner', browserOptions, async (t) => {
   const app = await startApp(t);
   await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });

@@ -361,6 +361,20 @@ scenario(15, 'first owner cannot be demoted, removed or duplicated by a stored r
   await setRole(app, member, 'member');
 });
 
+scenario(25, 'an owner cannot change or remove their own row, in any case of the address', async (app) => {
+  const second = 'second-owner@example.test';
+  await setRole(app, second, 'owner');
+  const token = await app.personFor(second);
+  for (const address of [personPath(second), personPath('Second-Owner@Example.Test')]) {
+    await refused(app, token, 'PUT', address, 403, "You can't change your own access. Ask another owner.", { body: { role: 'viewer' } });
+    await refused(app, token, 'DELETE', address, 403, "You can't change your own access. Ask another owner.");
+  }
+  const kept = (await rows(app.crmDb, 'wiser_people')).find((row) => row.email === second);
+  assert.equal(kept.role, 'owner');
+  // The same owner still changes other people.
+  await app.api('PUT', personPath(member), 204, { body: { role: 'member' }, token });
+});
+
 scenario(16, 'agent reads people and cannot PUT or DELETE', async (app) => {
   await setRole(app, member, 'member');
   const list = await app.api('GET', roster, 200, { token: app.agent });

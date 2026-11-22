@@ -35,6 +35,8 @@ const approved = {
     "You're signed in, but not set up yet",
     'An owner of this CRM needs to give you a role. Ask them, then reload this page.',
     'The first owner is set when the CRM is installed. Ask Wiser to change it.',
+    // Added after the mockup, at the second review round.
+    "You can't change your own access. Ask another owner.",
   ],
   'worker/sign-in.ts': ['You have view-only access. Ask an owner if you need to make changes.'],
 };

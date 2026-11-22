@@ -4,6 +4,7 @@ import type { PeopleDatabase, Role } from "../runtime/people/index.ts";
 export const peoplePath = "/api/wiser/people";
 const noStore = { "Cache-Control": "no-store" };
 const bodyLimit = 1024;
+const drainLimit = 64 * 1024;
 const waitingTitle = "You're signed in, but not set up yet";
 const waitingLine = "An owner of this CRM needs to give you a role. Ask them, then reload this page.";
 type PersonCaller = { email: string; role: Role };
@@ -104,7 +105,18 @@ async function readRole(request: Request): Promise<Role | Response> {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (length + value.length > bodyLimit) return refusal(413, "The body is too large.");
+      if (length + value.length > bodyLimit) {
+        // Discard a little more before answering, so a sender still writing a
+        // slightly oversized body is not cut off mid-send, then stop reading.
+        let extra = value.length;
+        while (extra < drainLimit) {
+          const rest = await reader.read();
+          if (rest.done) break;
+          extra += rest.value.length;
+        }
+        await reader.cancel();
+        return refusal(413, "The body is too large.");
+      }
       bytes.set(value, length);
       length += value.length;
     }
@@ -125,7 +137,10 @@ async function hasBody(request: Request): Promise<boolean> {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return false;
-      if (value.length > 0) return true;
+      if (value.length > 0) {
+        await reader.cancel();
+        return true;
+      }
     }
   } finally {
     reader.releaseLock();
@@ -156,6 +171,8 @@ export async function peopleResponse(
   const email = pathEmail(path.slice(peoplePath.length + 1));
   if (!email) return refusal(400, "Enter one email address.");
   if (email === firstOwner) return refusal(403, "The first owner is set when the CRM is installed. Ask Wiser to change it.");
+  // An owner cannot lock themselves out or step down alone: another owner does that.
+  if (email === you.email) return refusal(403, "You can't change your own access. Ask another owner.");
 
   if (request.method === "PUT") {
     const role = await readRole(request);

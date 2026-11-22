@@ -95,8 +95,18 @@ export function WiserPeople() {
         ? { method: "DELETE" }
         : { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Request failed");
-      setPending(false);
+      const message = error instanceof Error ? error.message : "Request failed";
+      // A refusal can mean the caller's own access changed since the list was
+      // read. Read it again so the screen shows what is true now.
+      try {
+        setList(await readPeople());
+      } catch {
+        window.location.reload();
+        return false;
+      } finally {
+        setPending(false);
+      }
+      setError(message);
       return false;
     }
     try {
