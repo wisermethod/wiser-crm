@@ -138,3 +138,12 @@ answers before it has read the whole request body makes the next request on
 that connection fail with "Your worker restarted mid-request", about one run in
 three. Read or cancel the body before answering, as `worker/people.ts` `drain`
 does for a refused oversized body.
+
+A Worker's own D1 call can fail while a test's inspection client reads the same
+database file, with `D1_ERROR: Failed to parse body as JSON, got: Error:
+internal error; reference = …`. Miniflare raises it after the statement has
+run, so a write may already have committed. Code that retries it must be safe
+to run twice, as `worker/take-in.ts` is. A test of such a retry lets the real
+statement commit before it throws, as `failAfterCommit` in
+`tests/intake.e2e.test.mjs` does. A background job that discards its rejection
+leaves no other trace, so log the discarded error while diagnosing it.

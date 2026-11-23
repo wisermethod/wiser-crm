@@ -97,7 +97,8 @@ async function retryTransientD1<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     const cause = error instanceof Error ? error.cause : undefined;
     const detail = `${error}\n${cause}`;
-    // Local D1 can return an internal error reference in place of SQLITE_BUSY.
+    // Local D1 can report an internal error reference after a statement has run
+    // (its bookmark read fails), so every step retried here is safe to run twice.
     if (!/\bSQLITE_BUSY(?:_[A-Z_]+)?\b|database is locked|D1_ERROR: Failed to parse body as JSON, got: Error: internal error; reference = /i.test(detail)) {
       throw error;
     }
@@ -142,7 +143,11 @@ export async function takeIn(
         if (!contactId) return false;
 
         const receipt = await intake.prepare(completeSubmission).bind(timestamp, contactId, id, claimId).run();
-        return receipt.meta.changes === 1;
+        if (receipt.meta.changes === 1) return true;
+        // A retry after a receipt that committed matches nothing; the stored receipt decides.
+        return await intake.prepare(
+          "SELECT 1 AS done FROM submissions WHERE id = ? AND taken_in_at = ? AND contact_id = ?",
+        ).bind(id, timestamp, contactId).first<number>("done") === 1;
       });
       if (completed) counts.taken_in++;
       else counts.failed++;

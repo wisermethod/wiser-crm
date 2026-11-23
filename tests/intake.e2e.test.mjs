@@ -57,6 +57,31 @@ function failIntakeStatement(db, prefix, method, error, failures) {
   };
 }
 
+// Local D1 can fail a reply after its statement committed (the bookmark read
+// follows the transaction), so the first matching call runs, then throws once.
+function failAfterCommit(db, prefix, method, error) {
+  let attempts = 0;
+  const once = (result) => {
+    if (++attempts === 1) throw error;
+    return result;
+  };
+  return {
+    batch: async (statements) => (method === 'batch' ? once(await db.batch(statements)) : db.batch(statements)),
+    prepare(sql) {
+      const statement = db.prepare(sql);
+      if (method === 'batch' || !sql.trimStart().startsWith(prefix)) return statement;
+      return {
+        bind: (...args) => ({
+          async [method]() {
+            return once(await statement.bind(...args)[method]());
+          },
+        }),
+      };
+    },
+    attempts: () => attempts,
+  };
+}
+
 async function waitFor(check) {
   for (let attempt = 0; attempt < 50; attempt++) {
     // The harness's Workers and this inspection client share one local
@@ -263,6 +288,33 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
     assert.equal(receipt.contact_id, beforeContacts[0].id);
     assert.deepEqual(visitorFields(receipt), erased);
   });
+
+  const lostReply = () => new Error('D1_ERROR: Failed to parse body as JSON, got: Error: internal error; reference = example');
+  for (const [step, calls, wrap] of [
+    ['claim', 2, () => ({ crm: crmDb, intake: failAfterCommit(intakeDb, 'UPDATE submissions SET claimed_at = ?, claim_id = ?', 'all', lostReply()) })],
+    ['note', 1, () => ({ crm: failAfterCommit(crmDb, null, 'batch', lostReply()), intake: intakeDb })],
+    ['receipt', 2, () => ({ crm: crmDb, intake: failAfterCommit(intakeDb, 'UPDATE submissions SET taken_in_at', 'run', lostReply()) })],
+  ]) {
+    await scenario(`a reply lost after the ${step} committed is counted once and duplicates nothing`, async () => {
+      assert.equal((await post(app)).status, 303);
+      const [before] = await submissions();
+      const { crm, intake } = wrap();
+      const faulty = crm === crmDb ? intake : crm;
+
+      assert.deepEqual(await takeIn(crm, intake), counts(1));
+      assert.equal(faulty.attempts(), calls);
+      const [contact, ...otherContacts] = await contacts();
+      const [note, ...otherNotes] = await notes();
+      assert.deepEqual([otherContacts.length, otherNotes.length], [0, 0]);
+      assert.equal(note.entity_id, contact.id);
+      assert.deepEqual(JSON.parse(note.meta), { intake_submission: before.id });
+      const [receipt] = await submissions();
+      assert.ok(receipt.taken_in_at);
+      assert.equal(receipt.contact_id, contact.id);
+      assert.equal(receipt.claim_id, null);
+      assert.deepEqual(visitorFields(receipt), erased);
+    });
+  }
 
   await scenario('5: neither email domain nor typed company name creates or links a company', async () => {
     await crmDb.prepare("INSERT INTO companies (id, name, domain) VALUES ('existing', 'Analytical Engine', 'example.test')").run();
