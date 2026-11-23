@@ -37,6 +37,26 @@ function counts(taken_in, failed = 0, remaining = 0) {
   return { taken_in, failed, remaining };
 }
 
+function failIntakeStatement(db, prefix, method, error, failures) {
+  let attempts = 0;
+  return {
+    batch: (statements) => db.batch(statements),
+    prepare(sql) {
+      const statement = db.prepare(sql);
+      if (!sql.trimStart().startsWith(prefix)) return statement;
+      return {
+        bind: (...args) => ({
+          async [method]() {
+            if (++attempts <= failures) throw error;
+            return statement.bind(...args)[method]();
+          },
+        }),
+      };
+    },
+    attempts: () => attempts,
+  };
+}
+
 async function waitFor(check) {
   for (let attempt = 0; attempt < 50; attempt++) {
     // The harness's Workers and this inspection client share one local
@@ -199,6 +219,49 @@ test('public intake and CRM take-in through two real local Workers', { timeout: 
     assert.deepEqual(visitorFields((await submissions())[0]), erased);
     assert.equal((await contacts()).length, 1);
     assert.equal((await notes()).length, 1);
+  });
+
+  await scenario('a transient D1 queue read failure is retried in the same take-in', async () => {
+    assert.equal((await post(app)).status, 303);
+    const [before] = await submissions();
+    const busyQueue = failIntakeStatement(intakeDb, 'SELECT id FROM submissions WHERE', 'all',
+      new Error('D1_ERROR: Failed to parse body as JSON, got: Error: internal error; reference = example'), 1);
+
+    assert.deepEqual(await takeIn(crmDb, busyQueue), counts(1));
+    assert.equal(busyQueue.attempts(), 2);
+    const [after] = await submissions();
+    const [contact] = await contacts();
+    const [note] = await notes();
+    assert.ok(after.taken_in_at);
+    assert.equal(after.contact_id, contact.id);
+    assert.equal(note.entity_id, contact.id);
+    assert.deepEqual(JSON.parse(note.meta), { intake_submission: before.id });
+  });
+
+  await scenario('a completion that stays locked releases its claim for the next take-in', async () => {
+    assert.equal((await post(app)).status, 303);
+    const busyCompletion = failIntakeStatement(intakeDb, 'UPDATE submissions SET taken_in_at', 'run',
+      new Error('D1_ERROR', { cause: new Error('database is locked: SQLITE_BUSY') }), 2);
+    const now = new Date();
+
+    assert.deepEqual(await takeIn(crmDb, busyCompletion, () => now), counts(0, 1, 1));
+    assert.equal(busyCompletion.attempts(), 2);
+    const [pending] = await submissions();
+    assert.equal(pending.taken_in_at, null);
+    assert.equal(pending.claim_id, null);
+    assert.equal(pending.claimed_at, null);
+    assert.deepEqual(visitorFields(pending), visitor);
+    const beforeContacts = await contacts();
+    const beforeNotes = await notes();
+    assert.equal(beforeContacts.length, 1);
+    assert.equal(beforeNotes.length, 1);
+
+    assert.deepEqual(await takeIn(crmDb, intakeDb, () => now), counts(1));
+    assert.deepEqual(await contacts(), beforeContacts);
+    assert.deepEqual(await notes(), beforeNotes);
+    const [receipt] = await submissions();
+    assert.equal(receipt.contact_id, beforeContacts[0].id);
+    assert.deepEqual(visitorFields(receipt), erased);
   });
 
   await scenario('5: neither email domain nor typed company name creates or links a company', async () => {

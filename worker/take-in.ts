@@ -91,6 +91,21 @@ async function writeNote(db: D1Database, submission: Submission): Promise<void> 
   ]);
 }
 
+async function retryTransientD1<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    const detail = `${error}\n${cause}`;
+    // Local D1 can return an internal error reference in place of SQLITE_BUSY.
+    if (!/\bSQLITE_BUSY(?:_[A-Z_]+)?\b|database is locked|D1_ERROR: Failed to parse body as JSON, got: Error: internal error; reference = /i.test(detail)) {
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return operation();
+  }
+}
+
 export async function takeIn(
   crm: D1Database,
   intake: D1Database,
@@ -99,41 +114,49 @@ export async function takeIn(
   const now = clock();
   const timestamp = now.toISOString();
   const staleBefore = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
-  await cleanIntake(intake, now);
-  const queue = await intake.prepare(`
+  await retryTransientD1(() => cleanIntake(intake, now));
+  const queue = await retryTransientD1(() => intake.prepare(`
     SELECT id FROM submissions WHERE ${pending} AND ${unclaimed} AND ${noticeReady}
     ORDER BY julianday(received_at), id LIMIT 50
-  `).bind(staleBefore, staleBefore).all<{ id: string }>();
+  `).bind(staleBefore, staleBefore).all<{ id: string }>());
   const counts = { taken_in: 0, failed: 0, remaining: 0 };
   for (const { id } of queue.results) {
+    const claimId = crypto.randomUUID();
     try {
-      const claimId = crypto.randomUUID();
-      const claim = await intake.prepare(`
+      // Reuse this run's claim if its first write committed but the reply failed.
+      const claim = await retryTransientD1(() => intake.prepare(`
         UPDATE submissions SET claimed_at = ?, claim_id = ?
-        WHERE id = ? AND ${pending} AND ${unclaimed} AND ${noticeReady}
+        WHERE id = ? AND ${pending} AND (${unclaimed} OR claim_id = ?) AND ${noticeReady}
         RETURNING id, claim_id, page, first_name, last_name, email, company, phone, message, notice_outcome
-      `).bind(timestamp, claimId, id, staleBefore, staleBefore).all<Submission>();
+      `).bind(timestamp, claimId, id, staleBefore, claimId, staleBefore).all<Submission>());
       const submission = claim.results[0];
       if (claim.meta.changes !== 1 || submission?.claim_id !== claimId) continue;
 
-      let contactId = await findNote(crm, id);
-      if (!contactId) {
-        await writeNote(crm, submission);
-        contactId = await findNote(crm, id);
-      }
-      if (!contactId) {
-        counts.failed++;
-        continue;
-      }
+      const completed = await retryTransientD1(async () => {
+        // On a retry, look for the note again before attempting a write.
+        let contactId = await findNote(crm, id);
+        if (!contactId) {
+          await writeNote(crm, submission);
+          contactId = await findNote(crm, id);
+        }
+        if (!contactId) return false;
 
-      const receipt = await intake.prepare(completeSubmission).bind(timestamp, contactId, id, claimId).run();
-      if (receipt.meta.changes === 1) counts.taken_in++;
+        const receipt = await intake.prepare(completeSubmission).bind(timestamp, contactId, id, claimId).run();
+        return receipt.meta.changes === 1;
+      });
+      if (completed) counts.taken_in++;
       else counts.failed++;
     } catch {
       counts.failed++;
+      // If release also fails, the existing expiry will make the row eligible.
+      await retryTransientD1(() => intake.prepare(`
+        UPDATE submissions SET claimed_at = NULL, claim_id = NULL
+        WHERE id = ? AND claim_id = ? AND ${pending}
+      `).bind(id, claimId).run()).catch(() => {});
     }
   }
-  counts.remaining = await intake.prepare(`SELECT count(*) AS count FROM submissions WHERE ${pending}`)
-    .first<number>("count") ?? 0;
+  counts.remaining = await retryTransientD1(() => intake.prepare(`
+    SELECT count(*) AS count FROM submissions WHERE ${pending}
+  `).first<number>("count")) ?? 0;
   return counts;
 }
