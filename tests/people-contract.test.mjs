@@ -14,8 +14,10 @@ const examples = {
   'email || "jane@example.com"': 'jane@example.com',
   removing: 'sam@example.com',
 };
+const viewOnlyError = 'You have view-only access. Ask an owner if you need to make changes.';
 const approved = {
   'src/client/app.tsx': ['People'],
+  'src/client/wiser-account.tsx': [viewOnlyError, "That change wasn't saved."],
   'src/client/wiser-people.tsx': [
     'People',
     '5 people',
@@ -38,7 +40,7 @@ const approved = {
     // Added after the mockup, at the second review round.
     "You can't change your own access. Ask another owner.",
   ],
-  'worker/sign-in.ts': ['You have view-only access. Ask an owner if you need to make changes.'],
+  'worker/sign-in.ts': [viewOnlyError, "Mailbox and meeting sync aren't available with view-only access."],
 };
 
 function sourceStrings(source) {

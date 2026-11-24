@@ -5,6 +5,11 @@ connector's upgrade order (`CONNECTOR.md`, "On an upgrade"), which every
 upgrade follows: record the running version, stop writes, take a restore
 point, migrate and deploy, and roll back on failure.
 
+## 0.3.0 to 0.3.1
+
+The CRM and intake use the same install variables and migrations as 0.3.0.
+Follow the connector's upgrade order.
+
 ## 0.2.0 to 0.3.0
 
 0.3.0 adds people and roles. The CRM keeps its own People list, and every

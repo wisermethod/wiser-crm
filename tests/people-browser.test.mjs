@@ -44,13 +44,20 @@ async function chromePage(t, url, token) {
   const output = child.stdio[4];
   input.on('error', disconnect);
   let buffer = '';
+  const requests = [];
+  const responses = [];
   output.setEncoding('utf8');
   output.on('data', (chunk) => {
     buffer += chunk;
     const messages = buffer.split('\0');
     buffer = messages.pop();
     for (const message of messages) {
-      const { id, result, error } = JSON.parse(message);
+      const { id, result, error, method, params } = JSON.parse(message);
+      if (method === 'Network.requestWillBeSent') {
+        requests.push({ url: params.request.url, method: params.request.method, type: params.type });
+      } else if (method === 'Network.responseReceived') {
+        responses.push({ url: params.response.url, status: params.response.status });
+      }
       const response = pending.get(id);
       if (!response) continue;
       pending.delete(id);
@@ -72,6 +79,8 @@ async function chromePage(t, url, token) {
   await page('Network.enable');
   await page('Network.setExtraHTTPHeaders', { headers: { 'Cf-Access-Jwt-Assertion': token } });
   return {
+    requests,
+    responses,
     async navigate(path) {
       const result = await page('Page.navigate', { url: new URL(path, url).href });
       assert.equal(result.errorText, undefined);
@@ -84,9 +93,17 @@ async function chromePage(t, url, token) {
     async type(text) {
       await page('Input.insertText', { text });
     },
+    async pressEnter() {
+      const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 };
+      await page('Input.dispatchKeyEvent', { type: 'keyDown', ...key });
+      await page('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+    },
     async click(x, y) {
       await page('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x, y });
       await page('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x, y });
+    },
+    async hover(x, y) {
+      await page('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
     },
   };
 }
@@ -134,6 +151,10 @@ test('an unassigned person gets the waiting page in Chrome', {
   assert.equal(await browser.evaluate("document.querySelector('main p')?.textContent"),
     'An owner of this CRM needs to give you a role. Ask them, then reload this page.');
   assert.equal(await browser.evaluate('Boolean(document.querySelector("nav, script"))'), false);
+  assert.deepEqual(await browser.evaluate(`[
+    (${exactText('main a', 'Sign out')})?.href ?? null,
+    Boolean(${exactText('main p', viewOnlyText)}),
+  ]`), [new URL('/cdn-cgi/access/logout', app.url).href, false]);
 });
 
 for (const [path, title, overview] of [
@@ -158,9 +179,14 @@ const browserOptions = { timeout: 120_000, skip: !executable && 'No local Chrome
 const email = 'jane@example.test';
 const roster = '/api/wiser/people';
 const janePath = `${roster}/${encodeURIComponent(email)}`;
+const viewOnlyText = "View only. You can see everything here but can't change it. Ask an owner if you need to make changes.";
+const refusedText = "That change wasn't saved.";
+const viewerError = 'You have view-only access. Ask an owner if you need to make changes.';
+const toast = "document.querySelector('button[aria-label=\"Dismiss error\"]')?.previousElementSibling.textContent";
 const janeRow = `[...document.querySelectorAll('main tbody tr')].find(row => row.cells[0]?.innerText.includes(${JSON.stringify(email)}))`;
+const confirmation = exactText('main [role=status]', refusedText);
 
-async function clickElement(browser, expression) {
+async function elementPoint(browser, expression) {
   await waitFor(browser, `Boolean(${expression})`);
   await browser.evaluate(`(${expression}).scrollIntoView({ block: 'nearest' })`);
   const point = `(() => {
@@ -171,11 +197,48 @@ async function clickElement(browser, expression) {
     return element.contains(document.elementFromPoint(...point)) ? point : null;
   })()`;
   await waitFor(browser, `Boolean(${point})`);
-  await browser.click(...await browser.evaluate(point));
+  return browser.evaluate(point);
+}
+
+async function clickElement(browser, expression) {
+  await browser.click(...await elementPoint(browser, expression));
 }
 
 function exactText(selector, text) {
   return `[...document.querySelectorAll(${JSON.stringify(selector)})].find(el => el.innerText.trim() === ${JSON.stringify(text)})`;
+}
+
+for (const [path, title] of [['/customers', 'Customers'], ['/deals?view=next-steps', 'Open deals']]) {
+  test(`viewer opens ${title} with meeting sync on without refetching or reloading`, browserOptions, async (t) => {
+    const app = await startApp(t, { inspect: true });
+    await app.crmDb.prepare('INSERT INTO meeting_sync (id, enabled) VALUES (1, 1)').run();
+    await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+    const browser = await chromePage(t, app.url, await app.personFor(email));
+    await browser.navigate(path);
+    await waitFor(browser, `document.querySelector('main h1')?.textContent === ${JSON.stringify(title)}
+      && Boolean(${exactText('main p', viewOnlyText)})`);
+    await delay(2300);
+
+    const reads = (path) => browser.requests.filter((request) => request.method === 'GET'
+      && new URL(request.url).pathname === path).length;
+    const counts = {
+      sync: reads('/api/meetings/sync'),
+      contacts: reads('/api/contacts'),
+      stats: reads('/api/stats'),
+      documents: browser.requests.filter(({ type }) => type === 'Document').length,
+    };
+    assert.ok(browser.responses.some(({ url, status }) =>
+      new URL(url).pathname === '/api/meetings/sync' && status === 403), 'the sync read was refused');
+    assert.deepEqual({
+      syncRequestedOnce: counts.sync === 1,
+      contactsReadNormally: counts.contacts >= 1 && counts.contacts <= 2,
+      statsReadOnce: counts.stats === 1,
+      documents: counts.documents,
+      refusedChangeShown: await browser.evaluate(`Boolean(${confirmation})`),
+    }, {
+      syncRequestedOnce: true, contactsReadNormally: true, statsReadOnce: true, documents: 1, refusedChangeShown: false,
+    }, JSON.stringify(counts));
+  });
 }
 
 async function openPeople(t, role) {
@@ -303,19 +366,205 @@ test('an owner demoted while their screen is open loses the controls at their ne
   assert.equal(result.people.find((person) => person.email === 'other@example.test').role, 'member');
 });
 
-test('a viewer submitting Add contact sees the approved refusal in the app banner', browserOptions, async (t) => {
+test('each person sees their account and only the viewer sees the view-only bar', browserOptions, async (t) => {
   const app = await startApp(t);
+  for (const [role, address] of [
+    ['owner', 'person@example.test'],
+    ['member', 'member@example.test'],
+    ['viewer', 'viewer@example.test'],
+  ]) {
+    await t.test(role, async (t) => {
+      if (role !== 'owner') await app.api('PUT', `${roster}/${encodeURIComponent(address)}`, 204, { body: { role } });
+      const browser = await chromePage(t, app.url, await app.personFor(address));
+      await browser.navigate('/contacts');
+      await waitFor(browser, `Boolean(${exactText('main header button', 'Add contact')})`);
+      const account = exactText('aside span', `Signed in as ${address}`);
+      const signOut = exactText('aside a', 'Sign out');
+      const bar = exactText('main p', viewOnlyText);
+      const signOutUrl = new URL('/cdn-cgi/access/logout', app.url).href;
+      await waitFor(browser, `Boolean(${account}) && (${signOut})?.href === ${JSON.stringify(signOutUrl)} && Boolean(${bar}) === ${role === 'viewer'}`);
+    });
+  }
+});
+
+test('the contacts list has no Gmail, Google Calendar or Slack status chips', browserOptions, async (t) => {
+  const app = await startApp(t);
+  const browser = await chromePage(t, app.url, app.person);
+  await browser.navigate('/contacts');
+  await waitFor(browser, `Boolean(${exactText('main header button', 'Add contact')})`);
+  const headerText = `(() => {
+    const header = document.querySelector('main header');
+    return [header.innerText, ...[...header.querySelectorAll('[title], [aria-label], [role=tooltip]')]
+      .flatMap(el => [el.title, el.getAttribute('aria-label'), el.textContent])].join(' ');
+  })()`;
+  const text = [await browser.evaluate(headerText)];
+  // An icon-only chip can put its name in a tooltip that appears only on hover.
+  const triggers = "document.querySelectorAll('main header span[data-state]')";
+  const count = await browser.evaluate(`${triggers}.length`);
+  for (let index = 0; index < count; index++) {
+    await browser.hover(0, 0);
+    await delay(150);
+    await browser.hover(...await elementPoint(browser, `${triggers}[${index}]`));
+    await delay(850);
+    text.push(await browser.evaluate(headerText));
+  }
+  assert.doesNotMatch(text.join(' '), /Gmail|Google Calendar|Slack/);
+});
+
+test('a refused viewer edit reloads the open contact and shows the bar feedback', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+  const { contact } = await app.api('POST', '/api/contacts', 201, {
+    body: { first_name: 'Mary', last_name: 'Jackson', title: 'Engineer' },
+  });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  const contactPath = `/api/contacts/${contact.id}`;
+  const contactUrl = new URL(contactPath, app.url).href;
+  const field = "document.querySelector('button[aria-label=\"Edit set job title…\"]')";
+  await browser.navigate(`/contacts?record=${contact.id}`);
+  await waitFor(browser, `${field}?.innerText === 'Engineer'`);
+  await browser.evaluate('window.originalContactDocument = true');
+  await clickElement(browser, field);
+  await waitFor(browser, "document.activeElement.matches('main input') && document.activeElement.value === 'Engineer'");
+  await browser.type('Unsaved title');
+  await waitFor(browser, "document.activeElement.value === 'Unsaved title'");
+
+  // The stored title changes after the viewer opens the record. Only a fresh
+  // read will show it, even if the field already discarded its local draft.
+  await app.api('PUT', contactPath, 200, { body: { title: 'Principal Engineer' } });
+  const responseStart = browser.responses.length;
+  await browser.pressEnter();
+  await waitFor(browser, `Boolean(${confirmation}) || ${toast} === ${JSON.stringify(viewerError)}`);
+  const responses = () => browser.responses.slice(responseStart);
+
+  await t.test('the 403 displays the refusal in the view-only bar', async () => {
+    assert.deepEqual([
+      responses().find(({ url, status }) => url === contactUrl && status === 403)?.status,
+      await browser.evaluate(`(${confirmation})?.innerText ?? null`),
+    ], [403, refusedText]);
+  });
+  await t.test('the bottom toast does not repeat the view-only refusal', async () => {
+    assert.notEqual(await browser.evaluate(toast), viewerError);
+  });
+  await t.test('the open contact returns to the latest stored title', async () => {
+    await waitFor(browser, `${field}?.innerText === 'Principal Engineer'`);
+    assert.equal(await browser.evaluate('window.originalContactDocument === true'), false, 'the document reloaded');
+    assert.equal(await browser.evaluate('location.pathname + location.search'), `/contacts?record=${contact.id}`);
+  });
+  await t.test('the contacts list re-reads after the refusal', async () => {
+    assert.ok(responses().some(({ url, status }) => url.startsWith(new URL('/api/contacts?', app.url).href) && status === 200));
+  });
+});
+
+test('a refused viewer column change reloads and restores the stored layout', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+  await app.api('POST', '/api/contacts', 201, { body: { first_name: 'Mary', email: 'mary@example.test' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/contacts');
+  const column = "document.querySelector('main th button[aria-label=\"Sort by Email\"]')";
+  await waitFor(browser, `Boolean(${column}) && Boolean(${exactText('main p', viewOnlyText)})`);
+  await browser.evaluate('window.originalContactsDocument = true');
+  await clickElement(browser, "document.querySelector('button[aria-label=\"Show or hide columns\"]')");
+  await clickElement(browser, exactText('[role=option]', 'Email'));
+  await waitFor(browser, `Boolean(${confirmation}) && (window.originalContactsDocument || Boolean(${column}))`);
+  assert.ok(browser.responses.some(({ url, status }) => /\/api\/views\/[^/]+\/fields\/email$/.test(url) && status === 403));
+  assert.deepEqual(await browser.evaluate(`[Boolean(window.originalContactsDocument), Boolean(${column})]`), [false, true]);
+
+  await browser.navigate('/contacts');
+  await waitFor(browser, `Boolean(${column}) && Boolean(${exactText('main p', viewOnlyText)})`);
+  assert.equal(await browser.evaluate(`Boolean(${confirmation})`), false, 'the next load does not repeat the refusal');
+});
+
+test('a refused viewer deal deletion reloads and keeps the deal', browserOptions, async (t) => {
+  const app = await startApp(t);
+  await app.api('PUT', janePath, 204, { body: { role: 'member' } });
+  const { deal } = await app.api('POST', '/api/deals', 201, { body: { name: 'Keep this deal' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/deals');
+  const remove = "document.querySelector('button[aria-label=\"Delete Keep this deal\"]')";
+  await waitFor(browser, `Boolean(${exactText('aside a', 'Sign out')}) && Boolean(${remove})`);
+  assert.equal(await browser.evaluate(`Boolean(${exactText('main p', viewOnlyText)})`), false);
+  await browser.evaluate('window.originalDealsDocument = true');
+  await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+  await clickElement(browser, remove);
+  await clickElement(browser, exactText('[role=dialog] button', 'Delete'));
+  await waitFor(browser, `Boolean(${confirmation}) && Boolean(${remove})`);
+  assert.ok(browser.responses.some(({ url, status }) => url === new URL(`/api/deals/${deal.id}`, app.url).href && status === 403));
+  assert.equal(await browser.evaluate('window.originalDealsDocument === true'), false);
+  assert.equal(await browser.evaluate("Boolean(document.querySelector('[role=dialog]'))"), false);
+});
+
+test('a view-only write error without a gesture clears without a refetch or reload', browserOptions, async (t) => {
+  const app = await startApp(t, {
+    wrapWorker: (worker) => ({
+      fetch(request, env, context) {
+        if (new URL(request.url).pathname === '/api/stats') {
+          return Response.json({ error: 'You have view-only access. Ask an owner if you need to make changes.' }, { status: 403 });
+        }
+        return worker.fetch(request, env, context);
+      },
+    }),
+  });
   await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
   const browser = await chromePage(t, app.url, await app.personFor(email));
   await browser.navigate('/contacts');
-  await clickElement(browser, exactText('main header button', 'Add contact'));
-  await waitFor(browser, "document.activeElement === document.querySelector('[role=dialog] #first_name')");
-  await browser.type('Refused');
-  await clickElement(browser, exactText('[role=dialog] button[type=submit]', 'Add contact'));
-  const dismiss = "document.querySelector('button[aria-label=\"Dismiss error\"]')";
-  await waitFor(browser, `Boolean(${dismiss})`);
-  assert.equal(await browser.evaluate(`${dismiss}.previousElementSibling.textContent`),
-    'You have view-only access. Ask an owner if you need to make changes.');
+  await waitFor(browser, `Boolean(${exactText('main p', viewOnlyText)})`);
+  await delay(500);
+  const stats = browser.requests.filter(({ url }) => new URL(url).pathname === '/api/stats');
+  const documents = browser.requests.filter(({ type }) => type === 'Document');
+  assert.deepEqual([stats.length, documents.length, await browser.evaluate(`[${toast} ?? null, Boolean(${confirmation})]`)],
+    [1, 1, [null, false]]);
+});
+
+test('the viewer account and sign-out return after two failed people reads', browserOptions, async (t) => {
+  const app = await startApp(t, {
+    wrapWorker: (worker) => {
+      let attempts = 0;
+      return {
+        fetch(request, env, context) {
+          if (request.method === 'GET' && new URL(request.url).pathname === '/api/wiser/people' && ++attempts <= 2) {
+            return Response.json({ error: 'People are unavailable.' }, { status: 503 });
+          }
+          return worker.fetch(request, env, context);
+        },
+      };
+    },
+  });
+  await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/contacts');
+  await waitFor(browser, `Boolean(${exactText('aside span', `Signed in as ${email}`)})
+    && Boolean(${exactText('aside a', 'Sign out')}) && Boolean(${exactText('main p', viewOnlyText)})`);
+  assert.deepEqual(browser.responses.filter(({ url }) => new URL(url).pathname === roster).map(({ status }) => status),
+    [503, 503, 200]);
+});
+
+test('a viewer who cannot load their account still sees a refused write in the toast', browserOptions, async (t) => {
+  const app = await startApp(t, {
+    wrapWorker: (worker) => {
+      return {
+        fetch(request, env, context) {
+          if (request.method === 'GET' && new URL(request.url).pathname === '/api/wiser/people') {
+            return Response.json({ error: 'People are unavailable.' }, { status: 503 });
+          }
+          return worker.fetch(request, env, context);
+        },
+      };
+    },
+  });
+  await app.api('PUT', janePath, 204, { body: { role: 'viewer' } });
+  await app.api('POST', '/api/contacts', 201, { body: { first_name: 'Mary', email: 'mary@example.test' } });
+  const browser = await chromePage(t, app.url, await app.personFor(email));
+  await browser.navigate('/contacts');
+  await browser.evaluate('window.originalContactsDocument = true');
+  await clickElement(browser, "document.querySelector('button[aria-label=\"Show or hide columns\"]')");
+  await clickElement(browser, exactText('[role=option]', 'Email'));
+  await delay(1100);
+  assert.equal(await browser.evaluate(toast), viewerError);
+  assert.equal(await browser.evaluate('window.originalContactsDocument === true'), true);
+  assert.deepEqual(browser.responses.filter(({ url }) => new URL(url).pathname === roster).map(({ status }) => status),
+    [503, 503, 503]);
 });
 
 test('a refused owner change shows the Worker sentence in the app banner', browserOptions, async (t) => {

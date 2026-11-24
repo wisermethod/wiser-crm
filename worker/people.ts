@@ -64,6 +64,7 @@ export async function waitForRole(
     svg { display: block; margin: auto; color: var(--accent-brand); }
     h1 { font-size: 20px; font-weight: 560; margin: 14px 0 6px; }
     p { max-width: 42ch; margin: auto; color: var(--muted-foreground); }
+    a { display: inline-block; margin-top: 12px; color: var(--foreground); text-underline-offset: 0.13em; }
   </style>
 </head>
 <body>
@@ -75,6 +76,7 @@ export async function waitForRole(
     </svg>
     <h1>${waitingTitle}</h1>
     <p>${waitingLine}</p>
+    <a href="/cdn-cgi/access/logout">Sign out</a>
   </main>
 </body>
 </html>`, {

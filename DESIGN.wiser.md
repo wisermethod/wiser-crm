@@ -174,3 +174,14 @@ a small Wiser CRM label beneath it. The browser title reads “Name · Wiser CRM
 An accent overrides only the teal family, using fitted marks, tints, text,
 focus and primary tones in both modes. An install with no brand values uses
 the default palette above and the Wiser CRM name.
+
+## Signed-in account
+
+The sidebar footer shows the signed-in email in muted text and an underlined
+sign-out link in the foreground colour. The collapsed sidebar keeps the
+sign-out icon available. On narrow screens the account sits beneath the
+scrolling navigation. The waiting page puts the same link beneath its message.
+
+The view-only bar spans the top of the main content. It uses the info tint,
+an info-coloured heading and foreground body text. A refused change adds
+bold feedback beneath the standing message.

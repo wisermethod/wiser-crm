@@ -27,8 +27,10 @@ address a role. If the person has already signed in, assign their role under
 beside their email and confirm. Their Cloudflare sign-in stays active until
 Wiser removes that access.
 
-Cloudflare sign-in is handled outside the CRM. Viewers still see controls for
-changing records. The CRM shows a message when it refuses the action. Members
-change records and see no controls on the People screen. An owner changes
-other people there and not their own row: another owner does that. If mailbox or meeting sync is ever switched on, the **Customers**
-and **Open deals** screens do not load for viewers.
+The sidebar shows your signed-in email and a **Sign out** link. The waiting
+page also offers **Sign out**. Viewers see a **View only.** bar at the top of the
+CRM. If a viewer tries to save a change, the CRM reloads and shows the stored
+values. The bar says **That change wasn't saved.** Members change records and
+see no controls on the People screen. An owner changes other people there and
+not their own row: another owner does that. If mailbox or meeting sync is ever
+switched on, the **Customers** and **Open deals** screens do not load for viewers.

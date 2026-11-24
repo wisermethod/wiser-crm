@@ -6,6 +6,7 @@ import {
   type JWTPayload, type JWTVerifyGetKey,
 } from "jose";
 import { caller, user } from "../runtime/app/identity.ts";
+import type { PeopleDatabase } from "../runtime/people/index.ts";
 import { signIn, type SignInConfiguration } from "./sign-in.ts";
 
 const configuration = {
@@ -31,12 +32,16 @@ async function token(claims: JWTPayload = {}, key = privateKey, kid = "current")
   }).setProtectedHeader({ alg: "RS256", kid }).sign(key);
 }
 
-function harness(config: SignInConfiguration = configuration, keySet: JWTVerifyGetKey | null = localKeys) {
+function harness(
+  config: SignInConfiguration = configuration,
+  keySet: JWTVerifyGetKey | null = localKeys,
+  db: PeopleDatabase = { prepare() { throw new Error("Unexpected people lookup"); } },
+) {
   const appCalls: Array<{ request: Request; caller: ReturnType<typeof caller>; user: ReturnType<typeof user>; env: object; context: object }> = [];
   const assetCalls: Request[] = [];
   const context = { waitUntil(_work: Promise<unknown>) {}, passThroughOnException() {} };
   const env = {
-    DB: { prepare() { throw new Error("Unexpected people lookup"); } },
+    DB: db,
     marker: "original binding",
     ASSETS: { async fetch(request: Request) {
       assetCalls.push(request);
@@ -242,6 +247,27 @@ test("verified API, llms and status reads pass through without overblocking clea
     assert.equal(h.appCalls.length, 1);
     assert.equal(h.assetCalls.length, 0);
   }
+});
+
+test("a viewer gets a different refusal for sync reads when sync settings cannot be read", async () => {
+  const email = "viewer@example.com";
+  const credential = await token({ email });
+  const h = harness(configuration, localKeys, {
+    prepare(sql) {
+      if (sql.includes("FROM meeting_sync")) throw new Error("Sync settings unavailable");
+      assert.equal(sql.includes("FROM wiser_people"), true);
+      return {
+        bind(address: string) { assert.equal(address, email); return this; },
+        async first() { return { email, role: "viewer" }; },
+      } as unknown as D1PreparedStatement;
+    },
+  });
+  for (const method of ["GET", "HEAD"]) {
+    const body = await refused(h, 403, "/api/meetings/sync", { method }, credential);
+    assert.equal(body.error, "Mailbox and meeting sync aren't available with view-only access.");
+  }
+  const body = await refused(h, 403, "/api/meetings/sync", { method: "PUT" }, credential);
+  assert.equal(body.error, "You have view-only access. Ask an owner if you need to make changes.");
 });
 
 test("nbf, exp, token type, required identity, and key id are enforced", async () => {

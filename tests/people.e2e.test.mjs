@@ -11,6 +11,7 @@ const member = 'member@example.test';
 const viewer = 'viewer@example.test';
 const browser = { Accept: 'text/html,application/xhtml+xml' };
 const viewerError = 'You have view-only access. Ask an owner if you need to make changes.';
+const viewerSyncError = "Mailbox and meeting sync aren't available with view-only access.";
 const peopleError = 'Only an owner can change people.';
 const contactInput = { first_name: 'Mary', last_name: 'Jackson', title: 'Engineer' };
 const appOptions = { inspect: true };
@@ -314,7 +315,7 @@ scenario(12, 'decoded sync route and paths containing control characters are ref
   await app.crmDb.prepare("INSERT INTO meeting_sync (id, enabled) VALUES (1, 1)").run();
   const encoded = '/api/contacts/contact/%65mails';
   assert.equal((await app.request('GET', encoded)).status, 200, 'owner reaches the encoded sync route');
-  await refused(app, token, 'GET', encoded, 403, viewerError);
+  await refused(app, token, 'GET', encoded, 403, viewerSyncError);
   for (const credential of [app.person, token, app.agent, await app.personFor(applicant)]) {
     for (const control of ['%00', '%0A', '%0D', '%1F', '%7F', '%E2%80%A8', '%E2%80%A9']) {
       await refused(app, credential, 'GET', '/api/contacts/contact/emails' + control, 400, 'This request path is invalid.');
@@ -479,7 +480,7 @@ for (const [source, update] of [
       for (const path of syncReads.values()) {
         for (const method of ['GET', 'HEAD']) {
           await app.api(method, path, 200, { token: memberToken });
-          if (enabled) await refused(app, viewerToken, method, path, 403, viewerError);
+          if (enabled) await refused(app, viewerToken, method, path, 403, viewerSyncError);
           else await app.api(method, path, 200, { token: viewerToken });
         }
       }
@@ -494,7 +495,7 @@ test('a failed sync settings read refuses viewer sync requests only', { timeout:
   await app.crmDb.prepare('DROP TABLE meeting_sync').run();
   const viewerToken = await app.personFor(viewer);
   const memberToken = await app.personFor(member);
-  for (const path of syncReads.values()) await refused(app, viewerToken, 'GET', path, 403, viewerError);
+  for (const path of syncReads.values()) await refused(app, viewerToken, 'GET', path, 403, viewerSyncError);
   await app.api('GET', '/api/contacts', 200, { token: viewerToken });
   await app.api('GET', '/api/email-sync', 200, { token: memberToken });
 });

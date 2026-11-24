@@ -20,6 +20,7 @@ import { CustomersPage } from "./components/customers/customers-page";
 import { MeetingsSettingsPage } from "./components/meetings/meetings-settings-page";
 import { RecordPanel, RecordPanelHeader } from "./components/record-page";
 import { defaultBrandName, useInstallBrand } from "./install-brand";
+import { AccountFooter, useSignedInPerson, useViewOnlyRefusal, ViewOnlyBar } from "./wiser-account";
 import { peoplePagePath, WiserPeople } from "./wiser-people";
 import "./styles.css";
 import "./wiser-theme.css";
@@ -54,6 +55,8 @@ export function App() {
   const brandName = useInstallBrand();
   const isAgent = document.documentElement.hasAttribute("data-agent");
   const state = useCrmState(isAgent);
+  const person = useSignedInPerson();
+  const { writeRefused, hideError } = useViewOnlyRefusal(person, state.error, state.setError);
   const { path, route, navigate } = useRouter();
   const peoplePage = path.split("?")[0] === peoplePagePath;
   // A list opens its records in a side panel; the record's own path is the full page.
@@ -105,10 +108,12 @@ export function App() {
             icon="contact"
             groups={groups}
             active={peoplePage ? "people" : activeFor(route)}
+            footer={person && <AccountFooter email={person.email} collapsed={navCollapsed} />}
             onNavigate={(item) => navigate(item.href ?? "/")}
           />
         </div>
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {person?.role === "viewer" && <ViewOnlyBar writeRefused={writeRefused} />}
           {state.loading ? (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">Loading…</div>
           ) : (
@@ -167,7 +172,7 @@ export function App() {
             </>
           )}
         </main>
-        <ErrorBanner />
+        {!hideError && <ErrorBanner />}
       </div>
     </ComposerProvider>
     </TooltipProvider>

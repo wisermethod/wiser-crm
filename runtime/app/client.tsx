@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent } from "react";
+import type { CSSProperties, MouseEvent, ReactNode } from "react";
 
 export interface AppNavItem {
   id: string;
@@ -17,6 +17,7 @@ export interface AppNavProps {
   icon?: string;
   groups: { label?: string; items: AppNavItem[] }[];
   active?: string;
+  footer?: ReactNode;
   onNavigate: (item: AppNavItem) => void;
 }
 
@@ -63,7 +64,7 @@ function Icon({ name }: { name?: string }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name ?? "contact"] ?? paths.contact} /></svg>;
 }
 
-export function AppNav({ title, brandPending, brandAttribution, icon, groups, active, onNavigate }: AppNavProps) {
+export function AppNav({ title, brandPending, brandAttribution, icon, groups, active, footer, onNavigate }: AppNavProps) {
   const home = groups.flatMap((group) => group.items).find((item) => item.home);
   const navigate = (event: MouseEvent<HTMLAnchorElement>, item: AppNavItem) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -93,7 +94,7 @@ export function AppNav({ title, brandPending, brandAttribution, icon, groups, ac
         </a>)}
       </div>)}
     </nav>
-    <div className="cn-nav-footer" />
+    <div className="cn-nav-footer">{footer}</div>
   </aside>;
 }
 
