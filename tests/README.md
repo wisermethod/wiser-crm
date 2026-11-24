@@ -147,3 +147,9 @@ to run twice, as `worker/take-in.ts` is. A test of such a retry lets the real
 statement commit before it throws, as `failAfterCommit` in
 `tests/intake.e2e.test.mjs` does. A background job that discards its rejection
 leaves no other trace, so log the discarded error while diagnosing it.
+
+The harness silences every Worker's output (`WRANGLER_LOG: 'none'` and
+`logLevel: 'none'` in `tests/local-worker.mjs`), so a temporary log line in a
+Worker prints nothing through it. A trace raises both for its own run, and adds
+one control line on a path every run takes. Read a silent trace as a result
+only once that control line has printed.
